@@ -520,7 +520,9 @@ mm() {
   # For single-package builds, default to verbose so developers can see full output.
   # User can override via -v / --log=quiet|normal|verbose.
   local log_level_arg="--log=verbose"
-  
+  # Extra CMake -D options (e.g. -DBUILD_STREAM_DEMO=ON), passed through to cmake configure
+  local extra_cmake_args=()
+
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -j*)
@@ -539,9 +541,21 @@ mm() {
         clean_mode=true
         shift
         ;;
+      -D*)
+        extra_cmake_args+=("$1")
+        shift
+        ;;
+      --)
+        shift
+        while [[ $# -gt 0 ]]; do
+          extra_cmake_args+=("$1")
+          shift
+        done
+        break
+        ;;
       -h|--help)
         cat <<EOF
-Usage: mm [options] [clean]
+Usage: mm [options] [clean] [--] [-DKEY=VALUE ...]
 
 Build commands (run from package directory):
   mm                   Build current package
@@ -549,6 +563,8 @@ Build commands (run from package directory):
   mm -v                Verbose: print full CMake/colcon output to console
   mm --log=LEVEL       Set logging level: quiet|normal|verbose (default: verbose)
   mm clean             Clean current package
+  mm -DBUILD_STREAM_DEMO=ON    Pass CMake option (CMake packages only)
+  mm -- -DOPT1=ON -DOPT2=OFF  Pass multiple CMake options after --
 
 Supported package types:
   - CMake (has CMakeLists.txt)
@@ -563,10 +579,14 @@ EOF
         ;;
     esac
   done
-  
+
   (
     cd "${SROBOTIS_ROOT}" || return 1
     PARALLEL_JOBS="${parallel_jobs}"
+    if [[ ${#extra_cmake_args[@]} -gt 0 ]]; then
+      SROBOTIS_CMAKE_EXTRA_ARGS="$(printf '%s\n' "${extra_cmake_args[@]}")"
+      export SROBOTIS_CMAKE_EXTRA_ARGS
+    fi
     if [[ "$clean_mode" == true ]]; then
       if [[ -n "${log_level_arg}" ]]; then
         _run_build "${log_level_arg}" package "${current_dir}" clean
@@ -618,6 +638,7 @@ Examples:
   mm             # Build current package
   mm -j8         # Use 8 parallel jobs
   mm clean       # Clean current package
+  mm -DBUILD_STREAM_DEMO=ON   # Pass CMake options (CMake packages only)
 EOF
 }
 
