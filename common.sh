@@ -362,12 +362,20 @@ check_single_dependency() {
 collect_system_dependencies() {
   local config_file="${BUILD_CONFIG_FILE:-}"
 
+  # Always include build base deps (build/package.xml) so m/mm check build tools and repo.
+  if [[ -f "${REPO_ROOT}/build/package.xml" ]] && grep -q '<system_depend' "${REPO_ROOT}/build/package.xml" 2>/dev/null; then
+    while IFS='|' read -r dep_type dep_name check_cmd; do
+      [[ -z "${dep_type}" || -z "${dep_name}" || -z "${check_cmd}" ]] && continue
+      echo "build|${dep_type}|${dep_name}|${check_cmd}"
+    done < <(read_package_sysdeps_lines "build")
+  fi
+
   if [[ -z "${config_file}" || ! -f "${config_file}" ]]; then
     return 0
   fi
 
   if ! has_jq; then
-    echo "[deps] WARNING: jq not available, skipping dependency check" >&2
+    echo "[deps] WARNING: jq not available, skipping target package dependency check" >&2
     return 0
   fi
 
@@ -389,11 +397,6 @@ check_system_dependencies() {
   local checked_packages=()
 
   echo "[deps] Checking system dependencies..."
-
-  if [[ -z "${config_file}" || ! -f "${config_file}" ]]; then
-    echo "[deps] No build configuration file, skipping dependency check"
-    return 0
-  fi
 
   local deps_lines
   mapfile -t deps_lines < <(collect_system_dependencies)
@@ -498,11 +501,7 @@ install_system_dependencies() {
 }
 
 check_and_install_dependencies() {
-  local config_file="${BUILD_CONFIG_FILE:-}"
-  if [[ -z "${config_file}" || ! -f "${config_file}" ]]; then
-    return 0
-  fi
-
+  # Always run check (build base deps are collected even without BUILD_CONFIG_FILE).
   if check_system_dependencies; then
     echo "[deps] All required dependencies are satisfied"
     return 0
@@ -529,7 +528,7 @@ check_and_install_dependencies() {
 }
 
 # Check and install system dependencies for a single package only (used by build.sh package).
-# Argument: pkg_dir or pkg_key (e.g. components/model_zoo/llm).
+# Always checks build base deps first, then the given package. Argument: pkg_dir or pkg_key (e.g. components/model_zoo/llm).
 check_and_install_dependencies_for_package() {
   local pkg_arg="$1"
   [[ -z "${pkg_arg}" ]] && return 0
@@ -550,6 +549,13 @@ check_and_install_dependencies_for_package() {
   echo "[deps] Checking system dependencies for package: ${pkg_key}"
 
   local deps_lines=()
+  # Build base deps (build/package.xml) first so mm also requires build tools and repo.
+  if [[ -f "${REPO_ROOT}/build/package.xml" ]] && grep -q '<system_depend' "${REPO_ROOT}/build/package.xml" 2>/dev/null; then
+    while IFS='|' read -r dep_type dep_name check_cmd; do
+      [[ -z "${dep_type}" || -z "${dep_name}" || -z "${check_cmd}" ]] && continue
+      deps_lines+=("${dep_type}|${dep_name}|${check_cmd}")
+    done < <(read_package_sysdeps_lines "build")
+  fi
   while IFS='|' read -r dep_type dep_name check_cmd; do
     [[ -z "${dep_type}" || -z "${dep_name}" || -z "${check_cmd}" ]] && continue
     deps_lines+=("${dep_type}|${dep_name}|${check_cmd}")
