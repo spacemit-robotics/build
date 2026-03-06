@@ -94,13 +94,16 @@ BUILD_TARGET=k3-com260-minimal ./build/build.sh all
 
 ### 单组件编译
 
-**方式一：快捷mm 命令**（需先 `source envsetup.sh` 且 `lunch`，在包目录内执行）
+**方式一：快捷 mm 命令**（需先 `source envsetup.sh` 且 `lunch`，在包目录内执行）
 
 ```bash
 source build/envsetup.sh
 lunch k3-com260-minimal
 cd components/peripherals/lidar
 mm
+# 传递 CMake 参数（仅对 CMake 包生效）
+mm -DBUILD_STREAM_DEMO=ON
+mm -- -DOPT1=ON -DOPT2=OFF
 ```
 
 **方式二：build.sh package**（支持相对路径，无需绝对路径）

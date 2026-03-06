@@ -192,17 +192,25 @@ build_one_nonros2_pkg() {
 
     local extra
     extra="$(pkg_cmake_extra_args "${pkg_key}")"
+    # Extra CMake -D options from mm (e.g. mm -DBUILD_STREAM_DEMO=ON)
+    local cmake_user_args=()
+    if [[ -n "${SROBOTIS_CMAKE_EXTRA_ARGS:-}" ]]; then
+      while IFS= read -r line; do
+        [[ -n "${line}" ]] && cmake_user_args+=("${line}")
+      done <<< "${SROBOTIS_CMAKE_EXTRA_ARGS}"
+    fi
 
     if [[ -n "${extra}" ]]; then
       # shellcheck disable=SC2086
       run_logged_overwrite "${log_file}" cmake -S "${src_dir}" -B "${bdir}" \
         -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
         -DCMAKE_PREFIX_PATH="${PREFIX}" \
-        ${extra}
+        ${extra} "${cmake_user_args[@]}"
     else
       run_logged_overwrite "${log_file}" cmake -S "${src_dir}" -B "${bdir}" \
         -DCMAKE_INSTALL_PREFIX="${PREFIX}" \
-        -DCMAKE_PREFIX_PATH="${PREFIX}"
+        -DCMAKE_PREFIX_PATH="${PREFIX}" \
+        "${cmake_user_args[@]}"
     fi
 
     run_logged_append "${log_file}" cmake --build "${bdir}" -j"${PARALLEL_JOBS}"
