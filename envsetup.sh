@@ -642,11 +642,9 @@ Examples:
 EOF
 }
 
-echo "[env] SROBOTIS_ROOT=${SROBOTIS_ROOT}"
+echo "[env] SDK_ROOT=${SROBOTIS_ROOT}"
 echo "[env] PREFIX=${PREFIX} (install prefix, under ${SROBOTIS_OUTPUT_ROOT})"
 echo "[env] ROS_DISTRO=${ROS_DISTRO}"
 echo "[env] ROS_SETUP=${ROS_SETUP}"
 echo "[env] PATH now includes: ${PREFIX}/bin"
 echo "[env] LD_LIBRARY_PATH now includes: ${PREFIX}/lib"
-echo
-srobot_help
