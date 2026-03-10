@@ -46,8 +46,9 @@ build_ros2_workspace() {
   local log_base="$3"
   local packages=("${@:4}")
 
-  # Ensure non-ROS2 packages are built first (ROS2 packages may depend on headers/libs in PREFIX).
-  if [[ -n "${BUILD_CONFIG_FILE:-}" && -f "${BUILD_CONFIG_FILE:-/dev/null}" ]]; then
+  # When building the full workspace (m -R / m), ensure non-ROS2 packages are built first.
+  # When building a single package (mm), skip this so only that ROS2 package is built.
+  if [[ ${#packages[@]} -eq 0 && -n "${BUILD_CONFIG_FILE:-}" && -f "${BUILD_CONFIG_FILE:-/dev/null}" ]]; then
     build_nonros2_enabled_packages
   fi
 
