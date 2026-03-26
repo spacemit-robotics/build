@@ -46,6 +46,11 @@ build_ros2_workspace() {
   local log_base="$3"
   local packages=("${@:4}")
 
+  if [[ ! -d "${ws_dir}" ]]; then
+    echo "[build] ROS2 workspace not found, skipping: ${ws_dir}"
+    return 0
+  fi
+
   # When building the full workspace (m -R / m), ensure non-ROS2 packages are built first.
   # When building a single package (mm), skip this so only that ROS2 package is built.
   if [[ ${#packages[@]} -eq 0 && -n "${BUILD_CONFIG_FILE:-}" && -f "${BUILD_CONFIG_FILE:-/dev/null}" ]]; then
@@ -55,7 +60,7 @@ build_ros2_workspace() {
   load_ros2_env
 
   mkdir -p "${build_base}" "${log_base}"
-  cd "${ws_dir}" || exit 1
+  cd "${ws_dir}" || return 1
 
   local colcon_args=(
     --merge-install
@@ -145,6 +150,11 @@ build_ros2_middleware() {
   local packages=("$@")
   local config_file="${BUILD_CONFIG_FILE:-}"
 
+  if [[ ! -d "${REPO_ROOT}/middleware/ros2" ]]; then
+    [[ ${#packages[@]} -eq 0 ]] && echo "[build] No middleware/ros2 workspace; skipping ROS2 middleware."
+    return 0
+  fi
+
   if [[ ${#packages[@]} -eq 0 && -n "${config_file}" && -f "${config_file}" ]]; then
     local enabled_packages=()
     local all_enabled=()
@@ -194,6 +204,11 @@ build_ros2_middleware() {
 build_ros2_applications() {
   local packages=("$@")
   local config_file="${BUILD_CONFIG_FILE:-}"
+
+  if [[ ! -d "${REPO_ROOT}/application/ros2" ]]; then
+    [[ ${#packages[@]} -eq 0 ]] && echo "[build] No application/ros2 workspace; skipping ROS2 applications."
+    return 0
+  fi
 
   if [[ ${#packages[@]} -eq 0 && -n "${config_file}" && -f "${config_file}" ]]; then
     local enabled_packages=()

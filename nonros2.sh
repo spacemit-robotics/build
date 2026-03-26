@@ -265,23 +265,38 @@ build_nonros2_enabled_packages() {
   fi
 
   local config_file="${BUILD_CONFIG_FILE:-}"
-  if [[ -z "${config_file}" || ! -f "${config_file}" ]]; then
-    echo "[build] ERROR: No build configuration selected. Run: lunch <target>" >&2
-    return 1
-  fi
-  has_jq || { echo "[build] ERROR: jq is required for target JSON parsing." >&2; return 1; }
+  local no_config=0
 
+  # If no target config is selected, fall back to building all buildable non-ROS2 packages in the repo.
+  # This keeps ./build/build.sh cmake usable without requiring lunch/BUILD_TARGET.
   local enabled_all=()
-  mapfile -t enabled_all < <(resolve_enabled_with_metadata)
-  if [[ ${#enabled_all[@]} -eq 0 ]]; then
-    echo "[build] ERROR: No enabled packages in configuration: ${config_file}" >&2
-    return 1
+  if [[ -z "${config_file}" || ! -f "${config_file}" ]]; then
+    no_config=1
+    echo "[build] No build configuration selected; building all non-ROS2 packages in repo."
+    mapfile -t enabled_all < <(discover_all_nonros2_packages | sort -u)
+    if [[ ${#enabled_all[@]} -eq 0 ]]; then
+      echo "[build] ERROR: No buildable non-ROS2 packages found in repo." >&2
+      return 1
+    fi
+  else
+    has_jq || { echo "[build] ERROR: jq is required for target JSON parsing." >&2; return 1; }
+    mapfile -t enabled_all < <(resolve_enabled_with_metadata)
+    if [[ ${#enabled_all[@]} -eq 0 ]]; then
+      echo "[build] ERROR: No enabled packages in configuration: ${config_file}" >&2
+      return 1
+    fi
   fi
 
   local build_set=()
   declare -A build_has=()
   for pkg_key in "${enabled_all[@]}"; do
     pkg_key_is_ros2 "${pkg_key}" && continue
+    if [[ "${no_config}" == "1" ]]; then
+      build_set+=("${pkg_key}")
+      build_has["${pkg_key}"]=1
+      continue
+    fi
+
     if [[ "${pkg_key}" == components/* || "${pkg_key}" == middleware/* || "${pkg_key}" == application/native/* ]]; then
       build_set+=("${pkg_key}")
       build_has["${pkg_key}"]=1
@@ -323,6 +338,21 @@ build_nonros2_enabled_packages() {
   declare -A pid_pkg=()
 
   echo "[build] Non-ROS2 packages: ${total} (parallel build workers: ${PARALLEL_JOBS}, install serialized)"
+
+  _tail_pkg_log() {
+    local pkg_key="$1"
+    [[ -n "${pkg_key}" ]] || return 0
+    local safe
+    safe="$(echo "${pkg_key}" | tr '/ ' '__')"
+    local log_file="${LOG_ROOT}/cmake/pkgs/${safe}.log"
+    if [[ -f "${log_file}" ]]; then
+      echo "[build] ---- Last $(_log_tail_lines) lines of log: ${log_file} ----" >&2
+      tail -n "$(_log_tail_lines)" "${log_file}" >&2 || true
+      echo "[build] ---- End log ----" >&2
+    else
+      echo "[build] (no log file found for ${pkg_key} at ${log_file})" >&2
+    fi
+  }
 
   _kill_all_running_jobs() {
     local p
@@ -383,6 +413,7 @@ build_nonros2_enabled_packages() {
     _reap_finished_nonblocking
     if [[ "${REAP_FAILED_RC}" -ne 0 ]]; then
       echo "[build] ERROR: Package build failed: ${REAP_FAILED_PKG}" >&2
+      _tail_pkg_log "${REAP_FAILED_PKG}"
       _kill_all_running_jobs
       return "${REAP_FAILED_RC}"
     fi
@@ -411,6 +442,7 @@ build_nonros2_enabled_packages() {
     _reap_finished_nonblocking
     if [[ "${REAP_FAILED_RC}" -ne 0 ]]; then
       echo "[build] ERROR: Package build failed: ${REAP_FAILED_PKG}" >&2
+      _tail_pkg_log "${REAP_FAILED_PKG}"
       _kill_all_running_jobs
       return "${REAP_FAILED_RC}"
     fi
@@ -433,6 +465,7 @@ build_nonros2_enabled_packages() {
       local failed_pkg="${pid_pkg[${finished_pid}]:-}"
       if [[ -n "${failed_pkg}" ]]; then
         echo "[build] ERROR: Package build failed: ${failed_pkg}" >&2
+        _tail_pkg_log "${failed_pkg}"
       else
         echo "[build] ERROR: Package build failed (unknown pid=${finished_pid})" >&2
       fi
@@ -464,6 +497,76 @@ build_nonros2_enabled_packages() {
   export SROBOTIS_NONROS2_BUILT_CONFIG="${BUILD_CONFIG_FILE:-}"
   export SROBOTIS_NONROS2_BUILT_PREFIX="${PREFIX}"
   return 0
+}
+
+discover_all_nonros2_packages() {
+  # Discover buildable non-ROS2 packages.
+  #
+  # "Buildable" means: contains CMakeLists.txt OR an executable build.sh.
+  #
+  # Output: pkg_key, one per line.
+  local root="${REPO_ROOT}"
+  [[ -d "${root}" ]] || return 0
+
+  # 1) Collect all candidate dirs that look buildable.
+  # 2) Reduce to "package roots" by removing any dir whose ancestor is also a candidate.
+  #    This avoids treating subdirectories like vision/src as separate packages when the
+  #    real package root is vision/.
+  local candidate_dirs=()
+  mapfile -t candidate_dirs < <(
+    find "${root}" \
+      \( \
+        -path "${REPO_ROOT}/output" -o -path "${REPO_ROOT}/output/*" -o \
+        -path "${REPO_ROOT}/.git" -o -path "${REPO_ROOT}/.git/*" -o \
+        -path "${REPO_ROOT}/build" -o -path "${REPO_ROOT}/build/*" -o \
+        -path "${REPO_ROOT}/tools" -o -path "${REPO_ROOT}/tools/*" -o \
+        -path "${REPO_ROOT}/scripts" -o -path "${REPO_ROOT}/scripts/*" -o \
+        -path "${REPO_ROOT}/target" -o -path "${REPO_ROOT}/target/*" -o \
+        -path "*/node_modules" -o -path "*/node_modules/*" -o \
+        -path "*/.venv" -o -path "*/.venv/*" -o \
+        -path "*/__pycache__" -o -path "*/__pycache__/*" \
+      \) -prune -o \
+      -type f \( -name "CMakeLists.txt" -o -name "build.sh" \) \
+      -print 2>/dev/null | sed 's#/[^/]*$##' | sort -u
+  )
+
+  if [[ ${#candidate_dirs[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  declare -A cand_has=()
+  local dir
+  for dir in "${candidate_dirs[@]}"; do
+    [[ -n "${dir}" ]] || continue
+    cand_has["${dir}"]=1
+  done
+
+  for dir in "${candidate_dirs[@]}"; do
+    [[ -n "${dir}" ]] || continue
+
+    # Skip ROS2 workspaces/packages here; ROS2 is handled by colcon.
+    local pkg_key="${dir#"${REPO_ROOT}"/}"
+    if [[ "${pkg_key}" == middleware/ros2/* || "${pkg_key}" == application/ros2/* ]]; then
+      continue
+    fi
+
+    local p="${dir%/*}"
+    local is_nested=0
+    while [[ -n "${p}" && "${p}" != "${dir}" ]]; do
+      if [[ -n "${cand_has[${p}]:-}" ]]; then
+        is_nested=1
+        break
+      fi
+      # Stop once we reached repo root or filesystem root.
+      if [[ "${p}" == "${REPO_ROOT}" || "${p}" == "/" ]]; then
+        break
+      fi
+      p="${p%/*}"
+    done
+
+    [[ "${is_nested}" == "1" ]] && continue
+    echo "${pkg_key}"
+  done
 }
 
 generate_components_cmake_package() {
