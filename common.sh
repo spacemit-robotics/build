@@ -254,6 +254,20 @@ load_build_config() {
     config_file="${REPO_ROOT}/target/${BUILD_TARGET}.json"
   fi
 
+  # Only accept target configs from the current repo to avoid accidentally
+  # using BUILD_TARGET_FILE exported by another workspace.
+  if [[ -n "${config_file}" ]]; then
+    local abs_cfg=""
+    abs_cfg="$(cd "$(dirname "${config_file}")" 2>/dev/null && pwd)/$(basename "${config_file}")" 2>/dev/null || true
+    if [[ -n "${abs_cfg}" ]]; then
+      config_file="${abs_cfg}"
+    fi
+    if [[ "${config_file}" != "${REPO_ROOT}/target/"* ]]; then
+      echo "[build] Ignoring external BUILD_TARGET_FILE (not under ${REPO_ROOT}/target): ${config_file}" >&2
+      config_file=""
+    fi
+  fi
+
   # If no config file specified, return (use default behavior)
   if [[ -z "${config_file}" || ! -f "${config_file}" ]]; then
     return 0
