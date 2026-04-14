@@ -30,13 +30,13 @@ _detect_script_dir() {
   elif [[ -n "$0" && "$0" != "-bash" && "$0" != "-zsh" && "$0" != "bash" && "$0" != "zsh" ]]; then
     script_path="$0"
   fi
-  
+
   # Validate we got a path
   if [[ -z "${script_path}" ]]; then
     echo "[env] ERROR: Cannot detect script location. Please source this script from bash or zsh." >&2
     return 1
   fi
-  
+
   # Resolve to absolute path and go one level up
   cd "$(dirname "${script_path}")/.." && pwd
 }
@@ -142,6 +142,89 @@ m_env_build() {
   )
 }
 
+# Convenience function: create a wheel-build Python virtual environment
+# for SDK subprojects using uv.
+# Usage (after sourcing this file):
+#   venv <python_version>
+# Example:
+#   venv 3.13.12
+venv() {
+  if [[ $# -ne 1 ]]; then
+    echo "Usage: venv <python_version>" >&2
+    echo "  e.g. venv 3.13.12" >&2
+    return 1
+  fi
+
+  local python_version="$1"
+  local venv_dir="${SROBOTIS_ROOT}/.venv"
+  local uv_bin=""
+
+  if command -v uv >/dev/null 2>&1; then
+    uv_bin="$(command -v uv)"
+  else
+    echo "[venv] uv not found, installing uv ..."
+    if ! command -v curl >/dev/null 2>&1; then
+      echo "[venv] ERROR: curl is required to install uv." >&2
+      return 1
+    fi
+
+    if ! curl -LsSf https://astral.sh/uv/install.sh | sh; then
+      echo "[venv] ERROR: failed to install uv." >&2
+      return 1
+    fi
+
+    if [[ -x "${HOME}/.local/bin/uv" ]]; then
+      uv_bin="${HOME}/.local/bin/uv"
+    elif command -v uv >/dev/null 2>&1; then
+      uv_bin="$(command -v uv)"
+    else
+      echo "[venv] ERROR: uv was installed but is still not available in PATH." >&2
+      return 1
+    fi
+  fi
+
+  export UV_EXTRA_INDEX_URL="https://git.spacemit.com/api/v4/projects/33/packages/pypi/simple"
+  export UV_INDEX_URL="https://mirrors.aliyun.com/pypi/simple"
+
+  if [[ -d "${venv_dir}" ]]; then
+    echo "[venv] Removing existing virtual environment: ${venv_dir}"
+    rm -rf "${venv_dir}"
+  fi
+
+  (
+    cd "${SROBOTIS_ROOT}" || exit 1
+    "${uv_bin}" venv --python "${python_version}" "${venv_dir}"
+  ) || {
+    echo "[venv] ERROR: failed to create virtual environment with Python ${python_version}." >&2
+    return 1
+  }
+
+  # shellcheck disable=SC1091
+  source "${venv_dir}/bin/activate" || {
+    echo "[venv] ERROR: failed to activate ${venv_dir}." >&2
+    return 1
+  }
+
+  if ! "${uv_bin}" pip install \
+    build \
+    packaging \
+    pip \
+    pybind11 \
+    pyproject_hooks \
+    setuptools \
+    wheel; then
+    echo "[venv] ERROR: failed to install wheel build dependencies." >&2
+    return 1
+  fi
+
+  echo "[venv] Ready: ${venv_dir}"
+  echo "[venv] Python version: ${python_version}"
+  echo "[venv] UV_INDEX_URL=${UV_INDEX_URL}"
+  echo "[venv] UV_EXTRA_INDEX_URL=${UV_EXTRA_INDEX_URL}"
+  echo "[venv] Virtual environment activated."
+  echo "[venv] You can now cd into vad/asr/tts/vision etc. and run 'mm'."
+}
+
 # Convenience function: change directory to repo root
 #   croot
 croot() {
@@ -180,7 +263,7 @@ sros2_setup() {
   ros_setup_dir="$(dirname "${ROS_SETUP}")"
   local saved_pwd="${PWD}"
   cd "${ros_setup_dir}" || return 1
-  
+
   case "$-" in
     *u*)
       set +u
@@ -193,7 +276,7 @@ sros2_setup() {
       source "${ROS_SETUP}"
       ;;
   esac
-  
+
   cd "${saved_pwd}" || return 1
 
   # 2) Source SDK-installed ROS2 overlay under PREFIX (if available)
@@ -215,7 +298,7 @@ sros2_setup() {
   sdk_setup_dir="$(dirname "${sdk_ros_setup}")"
   saved_pwd="${PWD}"
   cd "${sdk_setup_dir}" || return 1
-  
+
   case "$-" in
     *u*)
       set +u
@@ -228,7 +311,7 @@ sros2_setup() {
       source "${sdk_ros_setup}"
       ;;
   esac
-  
+
   cd "${saved_pwd}" || return 1
 
   echo "[env] ROS2 environment ready:"
@@ -257,7 +340,7 @@ EOF
   fi
 
   local target_dir="${SROBOTIS_ROOT}/target"
-  
+
   if [[ ! -d "${target_dir}" ]]; then
     echo "[lunch] ERROR: target directory not found: ${target_dir}" >&2
     return 1
@@ -267,21 +350,21 @@ EOF
   if [[ $# -gt 0 ]]; then
     local target_name="$1"
     local target_file="${target_dir}/${target_name}"
-    
+
     # Add .json extension if not present
     if [[ "${target_name}" != *.json ]]; then
       target_file="${target_dir}/${target_name}.json"
     fi
-    
+
     if [[ ! -f "${target_file}" ]]; then
       echo "[lunch] ERROR: Configuration file not found: ${target_file}" >&2
       return 1
     fi
-    
+
     export BUILD_TARGET="${target_name%.json}"
     export BUILD_TARGET_FILE="${target_file}"
     echo "[lunch] Selected: ${BUILD_TARGET}"
-    
+
     # Parse and display config info
     if command -v jq >/dev/null 2>&1; then
       local board product desc
@@ -305,13 +388,13 @@ EOF
   local configs=()
   local config_files=()
   local i=1
-  
+
   while IFS= read -r -d '' file; do
     local basename="${file##*/}"
     local name="${basename%.json}"
     configs+=("${name}")
     config_files+=("${file}")
-    
+
     # Try to extract board and product for display
     local display_name="${name}"
     if command -v jq >/dev/null 2>&1; then
@@ -322,7 +405,7 @@ EOF
         display_name="${board}-${product}"
       fi
     fi
-    
+
     printf "     %d\t%s\n" "${i}" "${display_name}"
     ((i++))
   done < <(find "${target_dir}" -maxdepth 1 -type f -name "*.json" -print0 | sort -z)
@@ -375,7 +458,7 @@ EOF
         break
       fi
     done
-    
+
     if [[ "${found}" != true ]]; then
       echo "[lunch] ERROR: Configuration not found: ${selection}" >&2
       return 1
@@ -384,7 +467,7 @@ EOF
 
   echo ""
   echo "[lunch] Selected: ${BUILD_TARGET}"
-  
+
   # Parse and display config info
   if command -v jq >/dev/null 2>&1; then
     local board product desc
@@ -410,17 +493,17 @@ _run_build() {
 m() {
   local current_dir
   current_dir="$(pwd)"
-  
+
   if [[ "$current_dir" != "$SROBOTIS_ROOT" ]] || [[ ! -f "${SROBOTIS_ROOT}/build/build.sh" ]]; then
     echo "[m] ERROR: Must be run from repo root" >&2
     return 1
   fi
-  
+
   local build_type="all"
   local clean_mode=false
   local parallel_jobs="${PARALLEL_JOBS:-$(nproc)}"
   local log_level_arg=""
-  
+
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -C)
@@ -495,25 +578,25 @@ EOF
 mm() {
   local current_dir
   current_dir="$(pwd)"
-  
+
   if [[ "$current_dir" != "$SROBOTIS_ROOT"/* ]]; then
     echo "[mm] ERROR: Current directory is not within project" >&2
     return 1
   fi
-  
+
   local is_package=false
   if [[ -f "${current_dir}/CMakeLists.txt" ]] || \
      [[ -f "${current_dir}/package.xml" ]] || \
      [[ -f "${current_dir}/build.sh" ]]; then
     is_package=true
   fi
-  
+
   if [[ "$is_package" != true ]]; then
     echo "[mm] ERROR: Not a valid package directory" >&2
     echo "[mm] Hint: Run mm from a directory with CMakeLists.txt, package.xml, or build.sh" >&2
     return 1
   fi
-  
+
   local clean_mode=false
   # Use parent's PARALLEL_JOBS if set (e.g. by m); otherwise nproc
   local parallel_jobs="${PARALLEL_JOBS:-$(nproc)}"
@@ -612,6 +695,7 @@ srobot_help() {
   lunch [target]               Select build target configuration (interactive menu)
   m [options] [clean]          Build from repo root (all, -C CMake, -R ROS2, -j jobs)
   mm [options] [clean]         Build single package (auto-detect type, supports custom scripts)
+  venv <python_version>        Create and activate .venv for wheel builds via uv
   m_env_build <app_dir>        Build Python env from pyproject.toml
 
 [env] Helper commands (navigation):
@@ -639,6 +723,10 @@ Examples:
   mm -j8         # Use 8 parallel jobs
   mm clean       # Clean current package
   mm -DBUILD_STREAM_DEMO=ON   # Pass CMake options (CMake packages only)
+
+  # Prepare a wheel build environment for Python-enabled components
+  venv 3.13.12
+  cd vad && mm
 EOF
 }
 
