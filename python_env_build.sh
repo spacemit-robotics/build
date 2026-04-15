@@ -83,7 +83,7 @@ fi
 #   APP    <project_name>  <app_dir>
 #   LOCAL  <pkg_name>      <src_dir>  <extras_string_or_empty>
 #   REMOTE <original_dependency_spec>
-mapfile -t META_LINES < <(python - "${REPO_ROOT}" "${APP_DIR}" << 'PY'
+mapfile -t META_LINES < <(python3 - "${REPO_ROOT}" "${APP_DIR}" << 'PY'
 import re
 import sys
 from pathlib import Path
@@ -262,7 +262,7 @@ mkdir -p "${OUTPUT_ROOT}/envs"
 
 if [[ ! -d "${ENV_DIR}" ]]; then
   echo "[env] Creating virtualenv at ${ENV_DIR}"
-  python -m venv "${ENV_DIR}"
+  python3 -m venv "${ENV_DIR}"
 else
   echo "[env] Using existing virtualenv at ${ENV_DIR}"
 fi
@@ -270,11 +270,11 @@ fi
 # shellcheck source=/dev/null
 source "${ENV_DIR}/bin/activate"
 
-python -m pip install --upgrade pip
+python3 -m pip install --upgrade pip
 
 if [[ ${#LOCAL_PKGS[@]} -gt 0 ]]; then
   echo "[env] Uninstalling any existing local project distributions: ${LOCAL_PKGS[*]}"
-  python -m pip uninstall -y "${LOCAL_PKGS[@]}" >/dev/null 2>&1 || true
+  python3 -m pip uninstall -y "${LOCAL_PKGS[@]}" >/dev/null 2>&1 || true
 
   echo "[env] Installing local projects in editable mode (from source, no deps):"
   for idx in "${!LOCAL_PKGS[@]}"; do
@@ -289,10 +289,10 @@ if [[ ${#LOCAL_PKGS[@]} -gt 0 ]]; then
 
     if [[ -n "${extras}" ]]; then
       echo "       - ${name} (from ${src_dir}, extras=[${extras}])"
-      python -m pip install -e "${src_dir}[${extras}]" --no-deps
+      python3 -m pip install -e "${src_dir}[${extras}]" --no-deps
     else
       echo "       - ${name} (from ${src_dir})"
-      python -m pip install -e "${src_dir}" --no-deps
+      python3 -m pip install -e "${src_dir}" --no-deps
     fi
   done
 else
@@ -300,12 +300,12 @@ else
 fi
 
 echo "[env] Installing application '${APP_NAME}' in editable mode from ${APP_DIR} (no deps, since we handle them separately)"
-python -m pip install -e "${APP_DIR}" --no-deps
+python3 -m pip install -e "${APP_DIR}" --no-deps
 
 if [[ ${#REMOTE_DEPS[@]} -gt 0 ]]; then
   echo "[env] Installing remaining third‑party dependencies from pyproject.toml:"
   printf '       %s\n' "${REMOTE_DEPS[@]}"
-  python -m pip install "${REMOTE_DEPS[@]}"
+  python3 -m pip install "${REMOTE_DEPS[@]}"
 else
   echo "[env] No third‑party dependencies to install from pyproject.toml."
 fi
