@@ -52,7 +52,7 @@ build_single_package() {
 
   # Check for custom build script first
   if [[ -f "${pkg_dir}/build.sh" ]] && [[ -x "${pkg_dir}/build.sh" ]]; then
-    build_one_nonros2_pkg "${pkg_key}"
+    build_one_nonros2_pkg "${pkg_key}" "${_want_python_wheels:-0}"
     return $?
   fi
   
@@ -84,9 +84,9 @@ build_single_package() {
     # Packages under application/native need to build entire workspace
     if [[ "${pkg_dir}" == "${REPO_ROOT}/application/native/"* ]]; then
       # Native apps are treated as a regular non-ROS2 CMake package in this build system.
-      build_one_nonros2_pkg "${pkg_key}"
+      build_one_nonros2_pkg "${pkg_key}" "${_want_python_wheels:-0}"
     else
-      build_one_nonros2_pkg "${pkg_key}"
+      build_one_nonros2_pkg "${pkg_key}" "${_want_python_wheels:-0}"
     fi
     return $?
   fi
@@ -253,6 +253,7 @@ main() {
   #   -jN
   #   -v
   #   --log=quiet|normal|verbose
+  #   --py, -py
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -j*)
@@ -267,6 +268,10 @@ main() {
       --log=*)
         LOG_LEVEL="${1#--log=}"
         export LOG_LEVEL
+        shift
+        ;;
+      --py|-py)
+        _want_python_wheels=1
         shift
         ;;
       --)
@@ -302,7 +307,7 @@ main() {
 
   case "${cmd}" in
     all)
-      build_nonros2_enabled_packages
+      build_nonros2_enabled_packages "${_want_python_wheels:-0}"
       build_ros2_middleware
       build_ros2_applications
       # After a full build, automatically generate the runtime rootfs prefix.
@@ -310,7 +315,7 @@ main() {
       ;;
     
     cmake|C)
-      build_nonros2_enabled_packages
+      build_nonros2_enabled_packages "${_want_python_wheels:-0}"
       ;;
     
     ros2|R)
@@ -359,6 +364,7 @@ Options:
   -jN                  Parallel build jobs (e.g. -j8)
   -v                   Verbose: print full CMake/colcon output to console
   --log=LEVEL          Logging level: quiet|normal|verbose (default: quiet)
+  --py, -py            After each non-ROS2 install, build Python wheels where applicable
 
 Environment variables:
   STAGING_PREFIX      Full install prefix for development/build (default: ${OUTPUT_ROOT}/staging)
@@ -381,6 +387,7 @@ Examples:
   ./build/build.sh package components/gui
   ./build/build.sh clean cmake
   AUTO_INSTALL_DEPS=yes ./build/build.sh all
+  ./build/build.sh --py cmake
 EOF
       ;;
     

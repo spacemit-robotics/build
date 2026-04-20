@@ -17,6 +17,7 @@
 | 输出布局   | `output/staging` 安装前缀，`output/rootfs` 部署目录（deploy-rootfs） |
 | 依赖       | 系统依赖检查与可选自动安装（apt），包级依赖解析                       |
 | Python 环境 | `m_env_build`、`python_env_build.sh` 为应用构建虚拟环境          |
+| Python wheel | 可选：在 **non-ROS2** 包安装成功后，用 PEP 517 生成 `.whl` 到 `output/wheels/`（见下文） |
 
 | 类别       | 不支持 / 说明                                                       |
 | ---------- | -------------------------------------------------------------------- |
@@ -65,6 +66,7 @@ m                    # CMake + ROS2
 m -C                 # 仅 CMake 包
 m -R                 # 仅 ROS2 包
 m -j8                # 指定 8 并行任务
+m -py                # 全量构建并在 non-ROS2 包 install 成功后打 Python wheel（见下文）
 ```
 
 **方式二：build.sh**
@@ -82,6 +84,7 @@ lunch k3-com260-minimal
 # 选项
 ./build/build.sh -j8 all    # 指定 8 并行
 ./build/build.sh -v all     # 详细输出到终端
+./build/build.sh --py cmake # 仅 CMake，并在各包 install 成功后打 Python wheel（见「Python wheel 包」）
 
 # 脚本/CI 场景：用环境变量指定目标，可省去 lunch
 BUILD_TARGET=k3-com260-minimal ./build/build.sh all
@@ -101,6 +104,7 @@ source build/envsetup.sh
 lunch k3-com260-minimal
 cd components/peripherals/lidar
 mm
+mm -py               # 构建当前包并在 install 成功后打 wheel（若存在 pyproject 约定路径）
 # 传递 CMake 参数（仅对 CMake 包生效）
 mm -DBUILD_STREAM_DEMO=ON
 mm -- -DOPT1=ON -DOPT2=OFF
@@ -122,6 +126,43 @@ cd components/peripherals/lidar
 ```
 
 `./build/build.sh help` 可查看完整子命令与选项。
+
+### Python wheel 包（可选）
+
+部分组件在 **`python/pyproject.toml`** 或 **包根目录 `pyproject.toml`** 下提供可发布的 Python 包。默认 **不** 打 wheel；需要时在**同一次**全量/CMake/单包构建中加上 **`--py`**（或通过 `m -py` / `mm -py` 转发给 `build.sh`）。
+
+**前置**：系统已安装 **`python3`（例如 3.14）** 只表示解释器可用；打 wheel 还需要：**`python3-build`**（提供 `python3 -m build`）与 **`pybind11-dev`**（多数 C++ bindings 需要 `find_package(pybind11 CONFIG)`）。使用 **`m -py` / `mm -py` / `./build/build.sh --py`** 时，若缺这些依赖，会在 wheel 阶段直接报错并中止（不再跳过）。
+
+**入口示例**
+
+```bash
+source build/envsetup.sh
+lunch k3-com260-minimal
+
+# 全量或仅 CMake：在对应包 install 成功后打 wheel
+m -py
+m -py -C
+./build/build.sh --py cmake
+./build/build.sh --py all
+
+# 单包（在包目录下）
+cd components/model_zoo/asr
+mm -py
+
+# 仅重打 wheel（不重跑 CMake）：在仓库根目录
+./build/python_wheels.sh components/model_zoo/asr
+./build/python_wheels.sh components/agent_tools/mlink/gateway
+```
+
+**产物路径**：`output/wheels/<包路径中 / 与空格替换为 __>/` 下生成 `.whl`；日志：`output/log/cmake/pkgs/<同上>.wheel.log`。
+
+**约定与限制**
+
+- 跳过 `components/thirdparty/` 下的包（避免对 vendor 误跑）。
+- wheel 构建会使用与 CMake 安装一致的 **`PREFIX`**（默认 `output/staging`），并前置 `CMAKE_PREFIX_PATH` / `PKG_CONFIG_PATH` / `LD_LIBRARY_PATH`，便于扩展模块找到已安装的库。
+- 若 `pyproject.toml` 不在上述两种路径（例如仅在子目录 `py_wheel/`），当前构建系统**不会**自动发现；可单独执行 `./build/python_wheels.sh` 并传入该组件在仓库中的包路径，或后续在组件内自行调用同一逻辑。
+
+实现上，wheel 逻辑集中在 **`build/python_wheels.sh`**：被 `nonros2.sh` **source** 时提供函数 `srobotis_maybe_build_python_wheel`；**直接执行**该文件时则仅对命令行列出的包打 wheel。
 
 ## 如何运行
 

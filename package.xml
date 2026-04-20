@@ -13,7 +13,8 @@
   <system_depend>pkg-config</system_depend>
   <system_depend>wget</system_depend>
   <system_depend>jq</system_depend>
-
+  <system_depend>pybind11-dev</system_depend>
+  <system_depend>python3-build</system_depend>
   <export>
     <!-- No build_type: dependency anchor only, not built by colcon -->
   </export>

@@ -27,6 +27,10 @@ if ! command -v read_package_deps >/dev/null 2>&1; then
   source "${REPO_ROOT}/build/common.sh"
 fi
 
+# Python wheel helper (optional PEP 517 wheels under output/wheels/)
+# shellcheck source=build/python_wheels.sh
+source "${REPO_ROOT}/build/python_wheels.sh"
+
 pkg_key_to_dir() {
   local pkg_key="$1"
   echo "${REPO_ROOT}/${pkg_key}"
@@ -105,6 +109,7 @@ with_install_lock() {
 
 build_one_nonros2_pkg() {
   local pkg_key="$1"
+  local want_py_wheels="${2:-0}"
   local pkg_dir
   pkg_dir="$(pkg_key_to_dir "${pkg_key}")"
 
@@ -142,6 +147,9 @@ build_one_nonros2_pkg() {
           ./build.sh
         " 2>&1 | tee "${log_file}"
         local rc="${PIPESTATUS[0]}"
+        if [[ "${rc}" -eq 0 ]]; then
+          srobotis_maybe_build_python_wheel "${pkg_key}" "${pkg_dir}" "${want_py_wheels}" || return $?
+        fi
         if [[ "${rc}" -eq 0 && "${in_sched}" != "1" && "${LOG_SHOW_DONE}" == "1" ]]; then
           echo "[build] End: ${pkg_key}"
         fi
@@ -156,6 +164,9 @@ build_one_nonros2_pkg() {
         ./build.sh
       "
       local rc=$?
+      if [[ "${rc}" -eq 0 ]]; then
+        srobotis_maybe_build_python_wheel "${pkg_key}" "${pkg_dir}" "${want_py_wheels}" || return $?
+      fi
       if [[ "${rc}" -eq 0 && "${in_sched}" != "1" && "${LOG_SHOW_DONE}" == "1" ]]; then
         echo "[build] End: ${pkg_key}"
       fi
@@ -176,6 +187,7 @@ build_one_nonros2_pkg() {
       tail -n "$(_log_tail_lines)" "${log_file}" >&2 || true
       return "${rc}"
     }
+    srobotis_maybe_build_python_wheel "${pkg_key}" "${pkg_dir}" "${want_py_wheels}" || return $?
     if [[ "${in_sched}" != "1" && "${LOG_SHOW_DONE}" == "1" ]]; then
       echo "[build] End: ${pkg_key}"
     fi
@@ -218,6 +230,9 @@ build_one_nonros2_pkg() {
     if [[ "${LOG_LEVEL}" == "verbose" && "${LOG_TEE}" == "1" ]]; then
       with_install_lock cmake --install "${bdir}" 2>&1 | tee -a "${log_file}"
       local rc="${PIPESTATUS[0]}"
+      if [[ "${rc}" -eq 0 ]]; then
+        srobotis_maybe_build_python_wheel "${pkg_key}" "${pkg_dir}" "${want_py_wheels}" || return $?
+      fi
       if [[ "${rc}" -eq 0 && "${in_sched}" != "1" && "${LOG_SHOW_DONE}" == "1" ]]; then
         echo "[build] End: ${pkg_key}"
       fi
@@ -226,6 +241,9 @@ build_one_nonros2_pkg() {
     if [[ "${LOG_LEVEL}" == "verbose" ]]; then
       with_install_lock cmake --install "${bdir}"
       local rc=$?
+      if [[ "${rc}" -eq 0 ]]; then
+        srobotis_maybe_build_python_wheel "${pkg_key}" "${pkg_dir}" "${want_py_wheels}" || return $?
+      fi
       if [[ "${rc}" -eq 0 && "${in_sched}" != "1" && "${LOG_SHOW_DONE}" == "1" ]]; then
         echo "[build] End: ${pkg_key}"
       fi
@@ -237,6 +255,7 @@ build_one_nonros2_pkg() {
       tail -n "$(_log_tail_lines)" "${log_file}" >&2 || true
       return "${rc}"
     }
+    srobotis_maybe_build_python_wheel "${pkg_key}" "${pkg_dir}" "${want_py_wheels}" || return $?
     if [[ "${in_sched}" != "1" && "${LOG_SHOW_DONE}" == "1" ]]; then
       echo "[build] End: ${pkg_key}"
     fi
@@ -263,6 +282,8 @@ build_nonros2_enabled_packages() {
     fi
     return 0
   fi
+
+  local want_py_wheels="${1:-0}"
 
   local config_file="${BUILD_CONFIG_FILE:-}"
   local no_config=0
@@ -432,7 +453,7 @@ build_nonros2_enabled_packages() {
       (
         set -euo pipefail
         export SROBOTIS_IN_SCHED=1
-        build_one_nonros2_pkg "${pkg}"
+        build_one_nonros2_pkg "${pkg}" "${want_py_wheels}"
       ) &
       local pid=$!
       pid_pkg["${pid}"]="${pkg}"
