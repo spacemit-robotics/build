@@ -503,6 +503,7 @@ m() {
   local clean_mode=false
   local parallel_jobs="${PARALLEL_JOBS:-$(nproc)}"
   local log_level_arg=""
+  local py_flag=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -530,6 +531,10 @@ m() {
         clean_mode=true
         shift
         ;;
+      -py)
+        py_flag=(--py)
+        shift
+        ;;
       -h|--help)
         cat <<EOF
 Usage: m [options] [clean]
@@ -538,6 +543,7 @@ Build commands (run from repo root):
   m                   Build all (CMake + ROS2)
   m -C                Build CMake packages only
   m -R                Build ROS2 packages only
+  m -py               Opt-in: build Python wheels after non-ROS2 installs
   m -j8               Use 8 parallel jobs
   m -v                Verbose: print full CMake/colcon output to console
   m --log=LEVEL       Set logging level: quiet|normal|verbose (default: quiet)
@@ -559,15 +565,15 @@ EOF
     cd "${SROBOTIS_ROOT}" || return 1
     if [[ "$clean_mode" == true ]]; then
       if [[ -n "${log_level_arg}" ]]; then
-        _run_build "${log_level_arg}" clean "${build_type}"
+        _run_build "${py_flag[@]}" "${log_level_arg}" clean "${build_type}"
       else
-        _run_build clean "${build_type}"
+        _run_build "${py_flag[@]}" clean "${build_type}"
       fi
     else
       if [[ -n "${log_level_arg}" ]]; then
-        _run_build "${log_level_arg}" "${build_type}"
+        _run_build "${py_flag[@]}" "${log_level_arg}" "${build_type}"
       else
-        _run_build "${build_type}"
+        _run_build "${py_flag[@]}" "${build_type}"
       fi
     fi
   )
@@ -605,6 +611,7 @@ mm() {
   local log_level_arg="--log=verbose"
   # Extra CMake -D options (e.g. -DBUILD_STREAM_DEMO=ON), passed through to cmake configure
   local extra_cmake_args=()
+  local py_flag=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -622,6 +629,10 @@ mm() {
         ;;
       clean)
         clean_mode=true
+        shift
+        ;;
+      -py)
+        py_flag=(--py)
         shift
         ;;
       -D*)
@@ -643,6 +654,7 @@ Usage: mm [options] [clean] [--] [-DKEY=VALUE ...]
 Build commands (run from package directory):
   mm                   Build current package
   mm -j8               Use 8 parallel jobs
+  mm -py               Opt-in: build Python wheel for this package if applicable
   mm -v                Verbose: print full CMake/colcon output to console
   mm --log=LEVEL       Set logging level: quiet|normal|verbose (default: verbose)
   mm clean             Clean current package
@@ -672,15 +684,15 @@ EOF
     fi
     if [[ "$clean_mode" == true ]]; then
       if [[ -n "${log_level_arg}" ]]; then
-        _run_build "${log_level_arg}" package "${current_dir}" clean
+        _run_build "${py_flag[@]}" "${log_level_arg}" package "${current_dir}" clean
       else
-        _run_build package "${current_dir}" clean
+        _run_build "${py_flag[@]}" package "${current_dir}" clean
       fi
     else
       if [[ -n "${log_level_arg}" ]]; then
-        _run_build "${log_level_arg}" package "${current_dir}"
+        _run_build "${py_flag[@]}" "${log_level_arg}" package "${current_dir}"
       else
-        _run_build package "${current_dir}"
+        _run_build "${py_flag[@]}" package "${current_dir}"
       fi
     fi
   )
@@ -697,6 +709,8 @@ srobot_help() {
   mm [options] [clean]         Build single package (auto-detect type, supports custom scripts)
   venv <python_version>        Create and activate .venv for wheel builds via uv
   m_env_build <app_dir>        Build Python env from pyproject.toml
+  m -py / mm -py               Opt-in: pass --py to build.sh for Python wheels after install
+  ./build/python_wheels.sh <pkg...>  Build wheels only for given package keys/paths
 
 [env] Helper commands (navigation):
   croot                             cd to repo root
@@ -716,6 +730,7 @@ Examples:
   m -C           # Build CMake only
   m -R           # Build ROS2 only
   m -j8          # Use 8 parallel jobs
+  m -py          # Full build + Python wheels for applicable CMake packages
   m clean        # Clean all
 
   # Build single package (from package directory)
