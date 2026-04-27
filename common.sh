@@ -192,10 +192,8 @@ read_package_xml_deps() {
 
 # Read <system_depend> from package.xml. Output lines: required|dep_name|check_cmd
 # Default check_cmd is "dpkg -s <dep_name>". Optional attribute check="..." overrides it.
-read_package_xml_sysdeps_lines() {
-  local pkg_key="$1"
-  local pkg_xml
-  pkg_xml="$(package_xml_path "${pkg_key}")"
+read_sysdeps_lines_from_xml_file() {
+  local pkg_xml="$1"
   [[ -f "${pkg_xml}" ]] || return 0
   while IFS= read -r line; do
     [[ -z "${line}" ]] && continue
@@ -207,6 +205,13 @@ read_package_xml_sysdeps_lines() {
     [[ -z "${check_cmd}" ]] && check_cmd="dpkg -s ${name}"
     echo "required|${name}|${check_cmd}"
   done < <(grep -E '<system_depend' "${pkg_xml}" 2>/dev/null)
+}
+
+read_package_xml_sysdeps_lines() {
+  local pkg_key="$1"
+  local pkg_xml
+  pkg_xml="$(package_xml_path "${pkg_key}")"
+  read_sysdeps_lines_from_xml_file "${pkg_xml}"
 }
 
 # Read dependencies for a package key:
@@ -243,6 +248,20 @@ read_package_sysdeps_lines() {
   local pj
   pj="$(package_json_path "${pkg_key}")"
   read_package_json_sysdeps_lines "${pj}"
+}
+
+# Return 0 if current BUILD_CONFIG_FILE enables any ROS2 packages.
+target_needs_ros2() {
+  local config_file="${BUILD_CONFIG_FILE:-}"
+  [[ -z "${config_file}" || ! -f "${config_file}" ]] && return 1
+  has_jq || return 1
+
+  # enabled_packages: ["middleware/ros2/...", "application/ros2/...", ...]
+  if jq -e '.enabled_packages[]? | startswith("middleware/ros2/") or startswith("application/ros2/")' \
+    "${config_file}" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
 }
 
 # Load build configuration from JSON file
@@ -382,6 +401,19 @@ collect_system_dependencies() {
       [[ -z "${dep_type}" || -z "${dep_name}" || -z "${check_cmd}" ]] && continue
       echo "build|${dep_type}|${dep_name}|${check_cmd}"
     done < <(read_package_sysdeps_lines "build")
+  fi
+
+  # Include ROS2 deps only when the current build needs ROS2.
+  # - build.sh sets BUILD_NEEDS_ROS2=1 for "ros2" and "all"
+  # - build.sh package path handles per-package detection separately
+  if [[ "${BUILD_NEEDS_ROS2:-0}" == "1" ]]; then
+    local ros2_deps_xml="${REPO_ROOT}/build/package_ros2.xml"
+    if [[ -f "${ros2_deps_xml}" ]] && grep -q '<system_depend' "${ros2_deps_xml}" 2>/dev/null; then
+      while IFS='|' read -r dep_type dep_name check_cmd; do
+        [[ -z "${dep_type}" || -z "${dep_name}" || -z "${check_cmd}" ]] && continue
+        echo "build_ros2_deps|${dep_type}|${dep_name}|${check_cmd}"
+      done < <(read_sysdeps_lines_from_xml_file "${ros2_deps_xml}")
+    fi
   fi
 
   if [[ -z "${config_file}" || ! -f "${config_file}" ]]; then
@@ -570,6 +602,22 @@ check_and_install_dependencies_for_package() {
       deps_lines+=("${dep_type}|${dep_name}|${check_cmd}")
     done < <(read_package_sysdeps_lines "build")
   fi
+
+  # If this is a ROS2 package (ament_*), also require ROS2 system deps.
+  if [[ -d "${pkg_arg}" && -f "${pkg_arg}/package.xml" ]]; then
+    local build_type
+    build_type="$(get_package_build_type "${pkg_arg}" || true)"
+    if [[ "${build_type}" == "ament_cmake" || "${build_type}" == "ament_python" ]]; then
+      local ros2_deps_xml="${REPO_ROOT}/build/package_ros2.xml"
+      if [[ -f "${ros2_deps_xml}" ]] && grep -q '<system_depend' "${ros2_deps_xml}" 2>/dev/null; then
+        while IFS='|' read -r dep_type dep_name check_cmd; do
+          [[ -z "${dep_type}" || -z "${dep_name}" || -z "${check_cmd}" ]] && continue
+          deps_lines+=("${dep_type}|${dep_name}|${check_cmd}")
+        done < <(read_sysdeps_lines_from_xml_file "${ros2_deps_xml}")
+      fi
+    fi
+  fi
+
   while IFS='|' read -r dep_type dep_name check_cmd; do
     [[ -z "${dep_type}" || -z "${dep_name}" || -z "${check_cmd}" ]] && continue
     deps_lines+=("${dep_type}|${dep_name}|${check_cmd}")
