@@ -74,8 +74,8 @@ if [[ -n "${PREFIX-}" ]]; then
 fi
 export PREFIX="${PREFIX:-${SROBOTIS_OUTPUT}}"
 
-# Default ROS2 distribution (can be overridden before sourcing)
-export ROS_DISTRO="${ROS_DISTRO:-jazzy}"
+# Default ROS2 distribution for this repo (can be overridden before sourcing)
+export ROS_DISTRO="${ROS_DISTRO:-humble}"
 export ROS_SETUP="${ROS_SETUP:-/opt/ros/${ROS_DISTRO}/setup.bash}"
 
 # Make sure ~/.local/bin (where colcon is often installed) is on PATH
@@ -250,7 +250,7 @@ capp() {
 # Then you can run:
 #   ros2 run srobot_mlink_demo mlink_demo_node
 sros2_setup() {
-  # 1) Source system ROS2 setup (e.g. /opt/ros/jazzy/setup.bash)
+  # 1) Source system ROS2 setup (e.g. /opt/ros/humble/setup.bash)
   if [[ ! -f "${ROS_SETUP}" ]]; then
     echo "[env] ROS setup script does not exist: ${ROS_SETUP}" >&2
     echo "[env] Please install ROS2 or set ROS_SETUP to a valid setup.bash." >&2
