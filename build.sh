@@ -295,6 +295,29 @@ main() {
   # Load build configuration if BUILD_TARGET is set
   load_build_config
 
+  # Whether this invocation needs ROS2 system dependencies.
+  # Used by build/common.sh to conditionally include build/package_ros2.xml.
+  #
+  # Rules:
+  # - ros2/R always needs ROS2 deps
+  # - all only needs ROS2 deps if the selected target actually enables ROS2 packages
+  # - cmake/C never needs ROS2 deps
+  case "${cmd}" in
+    ros2|R)
+      export BUILD_NEEDS_ROS2=1
+      ;;
+    all)
+      if target_needs_ros2; then
+        export BUILD_NEEDS_ROS2=1
+      else
+        export BUILD_NEEDS_ROS2=0
+      fi
+      ;;
+    *)
+      export BUILD_NEEDS_ROS2=0
+      ;;
+  esac
+
   # Check and install system dependencies (skip for clean/help).
   # For "package" we only check that package's deps later in the package branch.
   if [[ "${cmd}" != "clean" && "${cmd}" != "help" && "${cmd}" != "--help" && "${cmd}" != "-h" && "${cmd}" != "package" && "${cmd}" != "pkg" ]]; then
