@@ -376,10 +376,40 @@ map_config_path_to_ros2_package() {
 # System dependency checking and installation
 # ============================================================================
 
+# True when running on a SpacemiT board (device-tree compatible string contains "spacemit").
+is_spacemit_compatible_dt() {
+  [[ -r /proc/device-tree/compatible ]] && grep -q spacemit /proc/device-tree/compatible 2>/dev/null
+}
+
+# System packages whose Debian names include "spacemit" are assumed to come from SpacemiT BSP
+# (not generic apt). On non-SpacemiT machines they must not block builds or trigger install prompts.
+sysdep_is_spacemit_board_only() {
+  local dep_name="$1"
+  local lower
+  lower="$(printf '%s' "${dep_name}" | tr '[:upper:]' '[:lower:]')"
+  [[ "${lower}" == *spacemit* ]]
+}
+
+# Return 0 when this dependency should be ignored (satisfied without check/install).
+sysdep_skip_spacemit_only_off_board() {
+  local dep_name="$1"
+  sysdep_is_spacemit_board_only "${dep_name}" || return 1
+  if is_spacemit_compatible_dt; then
+    return 1
+  fi
+  echo "[deps] ✗ ${dep_name}: skipped (not SpacemiT)"
+  return 0
+}
+
 check_single_dependency() {
   local dep_name="$1"
   local check_cmd="$2"
   local debug="${DEBUG_DEPS:-0}"
+
+  # BSP-only debs: satisfy check off SpacemiT boards (sysdep_skip_* prints skip reason).
+  if sysdep_skip_spacemit_only_off_board "${dep_name}"; then
+    return 0
+  fi
 
   if [[ "${debug}" == "1" ]]; then
     echo "[deps] Checking ${dep_name}: ${check_cmd}" >&2
@@ -463,6 +493,11 @@ check_system_dependencies() {
       fi
     done
     [[ "${already_checked}" == "true" ]] && continue
+
+    if sysdep_skip_spacemit_only_off_board "${dep_name}"; then
+      checked_packages+=("${dep_name}")
+      continue
+    fi
 
     if check_single_dependency "${dep_name}" "${check_cmd}"; then
       echo "[deps] ✓ ${dep_name}: found"
@@ -643,6 +678,11 @@ check_and_install_dependencies_for_package() {
       fi
     done
     [[ "${already_checked}" == "true" ]] && continue
+
+    if sysdep_skip_spacemit_only_off_board "${dep_name}"; then
+      checked_packages+=("${dep_name}")
+      continue
+    fi
 
     if check_single_dependency "${dep_name}" "${check_cmd}"; then
       echo "[deps] ✓ ${dep_name}: found"
