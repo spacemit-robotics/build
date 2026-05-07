@@ -190,18 +190,63 @@ read_package_xml_deps() {
   done <<< "${raw}"
 }
 
+# Normalize architecture names used by package.xml platform filters.
+normalize_build_arch() {
+  local arch="$1"
+  case "${arch}" in
+    x86_64|amd64|AMD64)
+      echo "x86_64"
+      ;;
+    riscv64|rv64|riscv)
+      echo "riscv64"
+      ;;
+    *)
+      echo "${arch}"
+      ;;
+  esac
+}
+
+get_build_arch() {
+  normalize_build_arch "${SDK_BUILD_ARCH:-$(uname -m)}"
+}
+
+xml_line_attr() {
+  local line="$1"
+  local attr="$2"
+  echo "${line}" | sed -n "s/.*${attr}=\"\\([^\"]*\\)\".*/\\1/p"
+}
+
+xml_arch_matches_current() {
+  local arch_filter="$1"
+  [[ -z "${arch_filter}" ]] && return 0
+
+  local current_arch
+  current_arch="$(get_build_arch)"
+
+  local item
+  arch_filter="${arch_filter//,/ }"
+  for item in ${arch_filter}; do
+    [[ "$(normalize_build_arch "${item}")" == "${current_arch}" ]] && return 0
+  done
+
+  return 1
+}
+
 # Read <system_depend> from package.xml. Output lines: required|dep_name|check_cmd
 # Default check_cmd is "dpkg -s <dep_name>". Optional attribute check="..." overrides it.
+# Optional attribute arch="..." limits the dependency to matching SDK_BUILD_ARCH/uname -m.
 read_sysdeps_lines_from_xml_file() {
   local pkg_xml="$1"
   [[ -f "${pkg_xml}" ]] || return 0
   while IFS= read -r line; do
     [[ -z "${line}" ]] && continue
-    local name check_cmd
+    local name check_cmd arch_filter
     # Extract name from PCDATA before </system_depend> (avoid matching ">" inside check="...2>/dev/null...")
     name="$(echo "${line}" | sed -n 's/.*> *\([^<]*\) *<\/system_depend>.*/\1/p' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-    check_cmd="$(echo "${line}" | sed -n 's/.*check="\([^"]*\)".*/\1/p')"
+    check_cmd="$(xml_line_attr "${line}" "check")"
+    arch_filter="$(xml_line_attr "${line}" "arch")"
     [[ -z "${name}" ]] && continue
+    xml_arch_matches_current "${arch_filter}" || continue
     [[ -z "${check_cmd}" ]] && check_cmd="dpkg -s ${name}"
     echo "required|${name}|${check_cmd}"
   done < <(grep -E '<system_depend' "${pkg_xml}" 2>/dev/null)
@@ -685,5 +730,4 @@ check_and_install_dependencies_for_package() {
     return 1
   fi
 }
-
 
