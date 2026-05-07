@@ -45,6 +45,49 @@ sudo apt-get install -y build-essential cmake pkg-config jq
 
 若目标包含 ROS2 包（`middleware/ros2/`、`application/ros2/`），需先安装 ROS2 并加载环境，具体安装方式待补充。
 
+## 依赖检查机制
+
+构建入口会在实际编译前检查系统依赖：
+
+- `m` / `./build/build.sh all|cmake|ros2`：先读取当前 `target/*.json`，根据 `enabled_packages`
+  和各包 `package.xml` 里的 `<depend>` 递归展开完整包集合，再收集这些包的 `<system_depend>`。
+- `mm` / `./build/build.sh package <pkg>`：只检查基础构建依赖、当前包的系统依赖；若当前包是
+  `ament_cmake` / `ament_python`，还会额外检查 ROS2 基础依赖。
+- 构建基础依赖始终来自 `build/package.xml`；只有本次构建确实包含 ROS2 包时，才会额外读取
+  `build/package_ros2.xml`。
+
+`package.xml` 中两类依赖含义不同：
+
+```xml
+<depend>audio</depend>
+<system_depend check="pkg-config --exists yaml-cpp">libyaml-cpp-dev</system_depend>
+```
+
+- `<depend>` 是 SDK 内部包依赖，影响自动展开包集合和 non-ROS2 包构建顺序。
+- `<system_depend>` 是系统包依赖，影响编译前的 apt 依赖检查和缺包安装提示。
+
+`<system_depend>` 的文本内容是要安装的系统包名；默认检查命令是 `dpkg -s <包名>`。如果声明了
+`check="..."`，则使用该命令判断依赖是否已满足：
+
+```xml
+<system_depend>cmake</system_depend>
+<system_depend check="pkg-config --exists eigen3">libeigen3-dev</system_depend>
+<system_depend check="command -v espeak-ng">espeak-ng</system_depend>
+```
+
+平台相关系统依赖使用可选 `arch` 属性声明。构建平台默认来自 `uname -m`，也可通过
+`SDK_BUILD_ARCH` 覆盖；构建脚本会将 `amd64` 归一为 `x86_64`，将 `rv64` / `riscv` 归一为
+`riscv64`。不带 `arch` 表示所有平台都需要；带 `arch` 时只在匹配平台检查和安装：
+
+```xml
+<system_depend arch="x86_64" check="pkg-config --exists glfw3">libglfw3-dev</system_depend>
+<system_depend arch="riscv64">spacemit-onnxruntime</system_depend>
+<system_depend check="pkg-config --exists yaml-cpp">libyaml-cpp-dev</system_depend>
+```
+
+依赖检查失败时，构建系统会汇总缺失的 required 依赖，并提示安装；设置
+`AUTO_INSTALL_DEPS=yes` 或 `AUTO_INSTALL_DEPS=true` 时会直接执行 `sudo apt install -y ...`。
+
 ## 如何编译
 
 ### 完整编译
