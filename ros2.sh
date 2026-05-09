@@ -45,6 +45,7 @@ build_ros2_workspace() {
   local build_base="$2"
   local log_base="$3"
   local packages=("${@:4}")
+  local package_mode="${SROBOTIS_ROS2_PACKAGE_DEPS_MODE:-select}"
 
   if [[ ! -d "${ws_dir}" ]]; then
     echo "[build] ROS2 workspace not found, skipping: ${ws_dir}"
@@ -71,7 +72,48 @@ build_ros2_workspace() {
   )
 
   if [[ ${#packages[@]} -gt 0 ]]; then
-    colcon_args+=(--packages-select "${packages[@]}")
+    case "${package_mode}" in
+      with)
+        colcon_args+=(--packages-up-to "${packages[@]}")
+        ;;
+      only)
+        local dep_packages=()
+        local up_to_packages=()
+        local up_to_output
+        if ! up_to_output="$(colcon list --packages-up-to "${packages[@]}" --names-only)"; then
+          echo "[build] ERROR: Failed to resolve ROS2 dependencies for package: ${packages[*]}" >&2
+          return 1
+        fi
+        mapfile -t up_to_packages <<< "${up_to_output}"
+        local p selected
+        for p in "${up_to_packages[@]}"; do
+          [[ -n "${p}" ]] || continue
+          selected=0
+          local root_pkg
+          for root_pkg in "${packages[@]}"; do
+            if [[ "${p}" == "${root_pkg}" ]]; then
+              selected=1
+              break
+            fi
+          done
+          [[ "${selected}" == "1" ]] && continue
+          dep_packages+=("${p}")
+        done
+        if [[ ${#dep_packages[@]} -eq 0 ]]; then
+          echo "[build] No ROS2 dependencies to build for package: ${packages[*]}"
+          return 0
+        fi
+        packages=("${dep_packages[@]}")
+        colcon_args+=(--packages-select "${packages[@]}")
+        ;;
+      select|"")
+        colcon_args+=(--packages-select "${packages[@]}")
+        ;;
+      *)
+        echo "[build] ERROR: Unknown ROS2 package dependency mode: ${package_mode}" >&2
+        return 1
+        ;;
+    esac
   else
     :
   fi
@@ -255,5 +297,3 @@ build_ros2_applications() {
   fi
   return "${rc}"
 }
-
-

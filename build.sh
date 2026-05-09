@@ -391,6 +391,14 @@ main() {
           echo "[build] ERROR: System dependency check/installation failed for this package" >&2
           exit 1
         fi
+        local is_ros2_package=0
+        local pkg_build_type=""
+        if [[ -d "${pkg_dir}" && -f "${pkg_dir}/package.xml" ]]; then
+          pkg_build_type="$(get_package_build_type "${pkg_dir}" || true)"
+          if [[ "${pkg_build_type}" == "ament_cmake" || "${pkg_build_type}" == "ament_python" ]]; then
+            is_ros2_package=1
+          fi
+        fi
         if [[ "${deps_mode}" != "none" ]]; then
           local abs_pkg_dir
           [[ ! -d "${pkg_dir}" ]] && { echo "[build] ERROR: Package directory not found: ${pkg_dir}" >&2; exit 1; }
@@ -400,9 +408,20 @@ main() {
             exit 1
           fi
           local pkg_key="${abs_pkg_dir#"${REPO_ROOT}"/}"
-          build_nonros2_package_deps "${pkg_key}" 0 "${_want_python_wheels:-0}"
+          if [[ "${is_ros2_package}" == "1" ]]; then
+            if [[ "${deps_mode}" == "with" ]]; then
+              SROBOTIS_ROS2_PACKAGE_DEPS_MODE=with build_single_package "${pkg_dir}"
+            else
+              SROBOTIS_ROS2_PACKAGE_DEPS_MODE=only build_single_package "${pkg_dir}"
+            fi
+          else
+            (
+              unset SROBOTIS_CMAKE_EXTRA_ARGS
+              build_nonros2_package_deps "${pkg_key}" 0 "${_want_python_wheels:-0}"
+            )
+          fi
         fi
-        if [[ "${deps_mode}" != "only" ]]; then
+        if [[ "${deps_mode}" != "only" && ( "${deps_mode}" != "with" || "${is_ros2_package}" != "1" ) ]]; then
           build_single_package "${pkg_dir}"
         fi
       fi
@@ -425,8 +444,8 @@ Commands:
   cmake, C              Build CMake packages only
   ros2, R               Build ROS2 packages only
   package <dir> [clean|--with-deps|--deps]
-                        Build or clean single package; --with-deps builds SDK deps first,
-                        --deps builds only SDK deps
+                        Build or clean single package; --with-deps builds package deps first,
+                        --deps builds only package deps
   deploy-rootfs, rootfs Generate ${OUTPUT_ROOT}/rootfs from ${OUTPUT_ROOT}/staging (keeps \$(ros2 run) working)
   clean [all|cmake|ros2] Clean build directories
 

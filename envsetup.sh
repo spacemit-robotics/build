@@ -666,8 +666,8 @@ Build commands (run from package directory):
   mm -py               Opt-in: build Python wheel for this package if applicable
   mm -v                Verbose: print full CMake/colcon output to console
   mm --log=LEVEL       Set logging level: quiet|normal|verbose (default: verbose)
-  mm --with-deps       Build SDK dependencies first, then current package
-  mm --deps            Build only SDK dependencies of current package
+  mm --with-deps       Build package dependencies first, then current package
+  mm --deps            Build only package dependencies of current package
   mm clean             Clean current package
   mm -DBUILD_STREAM_DEMO=ON    Pass CMake option (CMake packages only)
   mm -- -DOPT1=ON -DOPT2=OFF  Pass multiple CMake options after --
@@ -723,7 +723,7 @@ srobot_help() {
   lunch [target]               Select build target configuration (interactive menu)
   m [options] [clean]          Build from repo root (all, -C CMake, -R ROS2, -j jobs)
   mm [options] [clean]         Build single package (auto-detect type, supports custom scripts)
-  mm --with-deps / --deps      Build current package with SDK deps, or only SDK deps
+  mm --with-deps / --deps      Build current package with deps, or only deps
   venv <python_version>        Create and activate .venv for wheel builds via uv
   m_env_build <app_dir>        Build Python env from pyproject.toml
   m -py / mm -py               Opt-in: pass --py to build.sh for Python wheels after install
@@ -753,8 +753,8 @@ Examples:
   # Build single package (from package directory)
   mm             # Build current package
   mm -j8         # Use 8 parallel jobs
-  mm --with-deps # Build SDK dependencies first, then current package
-  mm --deps      # Build only SDK dependencies of current package
+  mm --with-deps # Build package dependencies first, then current package
+  mm --deps      # Build only package dependencies of current package
   mm clean       # Clean current package
   mm -DBUILD_STREAM_DEMO=ON   # Pass CMake options (CMake packages only)
 
