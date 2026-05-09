@@ -167,15 +167,21 @@ get_pkg_key_by_package_name() {
 
 # Read <depend> from package.xml. Output one pkg_key per line.
 # <depend> content is package name (from other package.xml <name>); resolved to pkg_key. If content contains "/", treated as pkg_key.
+# Optional attribute arch="..." limits the dependency to matching SDK_BUILD_ARCH/uname -m.
 read_package_xml_deps() {
   local pkg_key="$1"
   local pkg_xml
   pkg_xml="$(package_xml_path "${pkg_key}")"
   [[ -f "${pkg_xml}" ]] || return 0
-  local raw
-  raw="$(sed -n 's/.*<depend> *\([^<]*\) *<\/depend>.*/\1/p' "${pkg_xml}" 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$')"
-  while IFS= read -r dep; do
+
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+    local dep arch_filter
+    dep="$(echo "${line}" | sed -n 's/.*<depend[^>]*> *\([^<]*\) *<\/depend>.*/\1/p' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     [[ -n "${dep}" ]] || continue
+    arch_filter="$(xml_line_attr "${line}" "arch")"
+    xml_arch_matches_current "${arch_filter}" || continue
+
     if [[ "${dep}" == */* ]]; then
       echo "${dep}"
     else
@@ -187,7 +193,7 @@ read_package_xml_deps() {
         echo "${dep}"
       fi
     fi
-  done <<< "${raw}"
+  done < <(grep -E '<depend([[:space:]>])' "${pkg_xml}" 2>/dev/null)
 }
 
 # Normalize architecture names used by package.xml platform filters.
@@ -730,4 +736,3 @@ check_and_install_dependencies_for_package() {
     return 1
   fi
 }
-

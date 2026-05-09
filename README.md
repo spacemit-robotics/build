@@ -60,11 +60,19 @@ sudo apt-get install -y build-essential cmake pkg-config jq
 
 ```xml
 <depend>audio</depend>
+<depend arch="x86_64">mujoco</depend>
 <system_depend check="pkg-config --exists yaml-cpp">libyaml-cpp-dev</system_depend>
 ```
 
 - `<depend>` 是 SDK 内部包依赖，影响自动展开包集合和 non-ROS2 包构建顺序。
 - `<system_depend>` 是系统包依赖，影响编译前的 apt 依赖检查和缺包安装提示。
+
+平台相关 SDK 内部包依赖可在 `<depend>` 上使用可选 `arch` 属性；不带 `arch` 表示所有平台都依赖，
+带 `arch` 时只在匹配平台加入依赖闭包。例如包只在 x86_64 构建时依赖 MuJoCo：
+
+```xml
+<depend arch="x86_64">mujoco</depend>
+```
 
 `<system_depend>` 的文本内容是要安装的系统包名；默认检查命令是 `dpkg -s <包名>`。如果声明了
 `check="..."`，则使用该命令判断依赖是否已满足：
