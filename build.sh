@@ -349,17 +349,62 @@ main() {
     package|pkg)
       local pkg_dir="${1:-}"
       local action="${2:-build}"
+      local extra_arg="${3:-}"
+      local deps_mode="none"
       
       [[ -z "${pkg_dir}" ]] && { echo "[build] ERROR: Package directory required" >&2; exit 1; }
+      if [[ -n "${extra_arg}" ]]; then
+        echo "[build] ERROR: Unexpected package argument: ${extra_arg}" >&2
+        echo "Use 'build.sh help' for usage" >&2
+        exit 1
+      fi
+
+      case "${action}" in
+        --with-deps)
+          deps_mode="with"
+          action="build"
+          ;;
+        --deps)
+          deps_mode="only"
+          action="build"
+          ;;
+        clean|build)
+          ;;
+        "")
+          action="build"
+          ;;
+        *)
+          echo "[build] ERROR: Unknown package action: ${action}" >&2
+          echo "Use 'build.sh help' for usage" >&2
+          exit 1
+          ;;
+      esac
       
       if [[ "${action}" == "clean" ]]; then
+        if [[ "${deps_mode}" != "none" ]]; then
+          echo "[build] ERROR: package clean cannot be combined with dependency build modes" >&2
+          exit 1
+        fi
         clean_single_package "${pkg_dir}"
       else
         if ! check_and_install_dependencies_for_package "${pkg_dir}"; then
           echo "[build] ERROR: System dependency check/installation failed for this package" >&2
           exit 1
         fi
-        build_single_package "${pkg_dir}"
+        if [[ "${deps_mode}" != "none" ]]; then
+          local abs_pkg_dir
+          [[ ! -d "${pkg_dir}" ]] && { echo "[build] ERROR: Package directory not found: ${pkg_dir}" >&2; exit 1; }
+          abs_pkg_dir="$(cd "${pkg_dir}" && pwd)"
+          if [[ "${abs_pkg_dir}" != "${REPO_ROOT}/"* ]]; then
+            echo "[build] ERROR: Package directory must be inside repo: ${abs_pkg_dir}" >&2
+            exit 1
+          fi
+          local pkg_key="${abs_pkg_dir#"${REPO_ROOT}"/}"
+          build_nonros2_package_deps "${pkg_key}" 0 "${_want_python_wheels:-0}"
+        fi
+        if [[ "${deps_mode}" != "only" ]]; then
+          build_single_package "${pkg_dir}"
+        fi
       fi
       ;;
     
@@ -379,8 +424,10 @@ Commands:
   all                   Build all (CMake + ROS2)
   cmake, C              Build CMake packages only
   ros2, R               Build ROS2 packages only
-  package <dir> [clean] Build or clean single package
-  deploy-rootfs, rootfs Generate ${OUTPUT_ROOT}/rootfs from ${OUTPUT_ROOT}/staging (keeps $(ros2 run) working)
+  package <dir> [clean|--with-deps|--deps]
+                        Build or clean single package; --with-deps builds SDK deps first,
+                        --deps builds only SDK deps
+  deploy-rootfs, rootfs Generate ${OUTPUT_ROOT}/rootfs from ${OUTPUT_ROOT}/staging (keeps \$(ros2 run) working)
   clean [all|cmake|ros2] Clean build directories
 
 Options:

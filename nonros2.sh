@@ -520,6 +520,126 @@ build_nonros2_enabled_packages() {
   return 0
 }
 
+build_nonros2_package_deps() {
+  local root_pkg="$1"
+  local include_self="${2:-0}"
+  local want_py_wheels="${3:-0}"
+
+  [[ -n "${root_pkg}" ]] || { echo "[build] ERROR: Package key required" >&2; return 1; }
+
+  local ordered=()
+  local visiting=()
+  local visited=()
+
+  _deps_resolve_pkg_key() {
+    local dep="$1"
+    if [[ "${dep}" == */* ]]; then
+      echo "${dep}"
+      return 0
+    fi
+
+    local dep_dir
+    dep_dir="$(pkg_key_to_dir "${dep}")"
+    if [[ -d "${dep_dir}" ]]; then
+      echo "${dep}"
+      return 0
+    fi
+
+    local matches=()
+    local candidate
+    while IFS= read -r candidate; do
+      [[ -n "${candidate}" ]] || continue
+      [[ "${candidate##*/}" == "${dep}" ]] || continue
+      matches+=("${candidate}")
+    done < <(discover_all_nonros2_packages)
+
+    if [[ ${#matches[@]} -eq 1 ]]; then
+      echo "${matches[0]}"
+      return 0
+    fi
+
+    echo "${dep}"
+  }
+
+  _deps_has_key() {
+    local key="$1"
+    shift
+    local item
+    for item in "$@"; do
+      [[ "${item}" == "${key}" ]] && return 0
+    done
+    return 1
+  }
+
+  _deps_visit_pkg() {
+    local pkg="$1"
+
+    if _deps_has_key "${pkg}" "${visited[@]}"; then
+      return 0
+    fi
+    if _deps_has_key "${pkg}" "${visiting[@]}"; then
+      echo "[build] ERROR: Dependency cycle detected at package: ${pkg}" >&2
+      return 1
+    fi
+
+    visiting+=("${pkg}")
+
+    local dep
+    while IFS= read -r dep; do
+      [[ -n "${dep}" ]] || continue
+      dep="$(_deps_resolve_pkg_key "${dep}")"
+
+      if pkg_key_is_ros2 "${dep}"; then
+        echo "[build] ERROR: mm --with-deps/--deps only supports non-ROS2 SDK dependencies: ${pkg} -> ${dep}" >&2
+        return 1
+      fi
+
+      local dep_dir
+      dep_dir="$(pkg_key_to_dir "${dep}")"
+      local dep_src_dir
+      dep_src_dir="$(pkg_overlay_src_dir "${dep}")"
+      if [[ ! -d "${dep_dir}" && ! -d "${dep_src_dir}" ]]; then
+        echo "[build] ERROR: Dependency package not found: ${pkg} -> ${dep}" >&2
+        return 1
+      fi
+      if [[ ! -f "${dep_src_dir}/CMakeLists.txt" && ! -x "${dep_src_dir}/build.sh" && ! -x "${dep_dir}/build.sh" ]]; then
+        echo "[build] ERROR: Dependency is not buildable by non-ROS2 builder: ${pkg} -> ${dep}" >&2
+        return 1
+      fi
+
+      _deps_visit_pkg "${dep}" || return $?
+    done < <(read_package_deps "${pkg}")
+
+    local next_visiting=()
+    local item
+    for item in "${visiting[@]}"; do
+      [[ "${item}" == "${pkg}" ]] && continue
+      next_visiting+=("${item}")
+    done
+    visiting=("${next_visiting[@]}")
+
+    visited+=("${pkg}")
+    if [[ "${include_self}" == "1" || "${pkg}" != "${root_pkg}" ]]; then
+      ordered+=("${pkg}")
+    fi
+  }
+
+  _deps_visit_pkg "${root_pkg}" || return $?
+
+  if [[ ${#ordered[@]} -eq 0 ]]; then
+    echo "[build] No SDK dependencies to build for package: ${root_pkg}"
+    return 0
+  fi
+
+  echo "[build] SDK dependency packages: ${#ordered[@]}"
+  local pkg
+  for pkg in "${ordered[@]}"; do
+    build_one_nonros2_pkg "${pkg}" "${want_py_wheels}" || return $?
+  done
+
+  generate_components_cmake_package "${ordered[@]}"
+}
+
 discover_all_nonros2_packages() {
   # Discover buildable non-ROS2 packages.
   #
@@ -689,5 +809,3 @@ EOF
     done
   fi
 }
-
-
