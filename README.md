@@ -156,12 +156,15 @@ lunch k3-com260-minimal
 cd components/peripherals/lidar
 mm
 mm -py               # 构建当前包并在 install 成功后打 wheel（若存在 pyproject 约定路径）
-mm --with-deps       # 先构建当前包的 SDK 内部依赖，再构建当前包
-mm --deps            # 只构建当前包的 SDK 内部依赖，不构建当前包
+mm --with-deps       # 先构建当前包依赖，再构建当前包
+mm --deps            # 只构建当前包依赖，不构建当前包
 # 传递 CMake 参数（仅对 CMake 包生效）
 mm -DBUILD_STREAM_DEMO=ON
 mm -- -DOPT1=ON -DOPT2=OFF
 ```
+
+`mm --with-deps` / `mm --deps` 对 CMake 包解析 SDK 内部 `<depend>` 依赖；对 ROS2 包使用
+colcon 的 workspace 包依赖（`--packages-up-to`）语义。
 
 **方式二：build.sh package**（支持相对路径，无需绝对路径）
 
