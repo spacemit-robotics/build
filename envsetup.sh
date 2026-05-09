@@ -612,6 +612,7 @@ mm() {
   # Extra CMake -D options (e.g. -DBUILD_STREAM_DEMO=ON), passed through to cmake configure
   local extra_cmake_args=()
   local py_flag=()
+  local deps_mode=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -625,6 +626,14 @@ mm() {
         ;;
       --log=*)
         log_level_arg="$1"
+        shift
+        ;;
+      --with-deps)
+        deps_mode="--with-deps"
+        shift
+        ;;
+      --deps)
+        deps_mode="--deps"
         shift
         ;;
       clean)
@@ -657,6 +666,8 @@ Build commands (run from package directory):
   mm -py               Opt-in: build Python wheel for this package if applicable
   mm -v                Verbose: print full CMake/colcon output to console
   mm --log=LEVEL       Set logging level: quiet|normal|verbose (default: verbose)
+  mm --with-deps       Build SDK dependencies first, then current package
+  mm --deps            Build only SDK dependencies of current package
   mm clean             Clean current package
   mm -DBUILD_STREAM_DEMO=ON    Pass CMake option (CMake packages only)
   mm -- -DOPT1=ON -DOPT2=OFF  Pass multiple CMake options after --
@@ -675,6 +686,11 @@ EOF
     esac
   done
 
+  if [[ "$clean_mode" == true && -n "${deps_mode}" ]]; then
+    echo "[mm] ERROR: clean cannot be combined with ${deps_mode}" >&2
+    return 1
+  fi
+
   (
     cd "${SROBOTIS_ROOT}" || return 1
     PARALLEL_JOBS="${parallel_jobs}"
@@ -690,9 +706,9 @@ EOF
       fi
     else
       if [[ -n "${log_level_arg}" ]]; then
-        _run_build "${py_flag[@]}" "${log_level_arg}" package "${current_dir}"
+        _run_build "${py_flag[@]}" "${log_level_arg}" package "${current_dir}" ${deps_mode:+"${deps_mode}"}
       else
-        _run_build "${py_flag[@]}" package "${current_dir}"
+        _run_build "${py_flag[@]}" package "${current_dir}" ${deps_mode:+"${deps_mode}"}
       fi
     fi
   )
@@ -707,6 +723,7 @@ srobot_help() {
   lunch [target]               Select build target configuration (interactive menu)
   m [options] [clean]          Build from repo root (all, -C CMake, -R ROS2, -j jobs)
   mm [options] [clean]         Build single package (auto-detect type, supports custom scripts)
+  mm --with-deps / --deps      Build current package with SDK deps, or only SDK deps
   venv <python_version>        Create and activate .venv for wheel builds via uv
   m_env_build <app_dir>        Build Python env from pyproject.toml
   m -py / mm -py               Opt-in: pass --py to build.sh for Python wheels after install
@@ -736,6 +753,8 @@ Examples:
   # Build single package (from package directory)
   mm             # Build current package
   mm -j8         # Use 8 parallel jobs
+  mm --with-deps # Build SDK dependencies first, then current package
+  mm --deps      # Build only SDK dependencies of current package
   mm clean       # Clean current package
   mm -DBUILD_STREAM_DEMO=ON   # Pass CMake options (CMake packages only)
 
