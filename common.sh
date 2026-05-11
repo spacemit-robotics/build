@@ -196,6 +196,72 @@ read_package_xml_deps() {
   done < <(grep -E '<depend([[:space:]>])' "${pkg_xml}" 2>/dev/null)
 }
 
+# Read ROS2 package dependencies that map to SDK non-ROS2 components.
+# This keeps ROS/system dependencies (rclcpp, sensor_msgs, etc.) in colcon/ROS,
+# while allowing mm --with-deps/--deps to prebuild SDK underlay components.
+read_ros2_sdk_nonros2_deps() {
+  local pkg_key="$1"
+  local pkg_xml
+  pkg_xml="$(package_xml_path "${pkg_key}")"
+  [[ -f "${pkg_xml}" ]] || return 0
+
+  local emitted=()
+
+  while IFS= read -r line; do
+    [[ -z "${line}" ]] && continue
+
+    local dep arch_filter resolved dep_xml dep_dir build_type is_buildable
+    dep="$(echo "${line}" | sed -n 's/.*<\(depend\|build_depend\|build_export_depend\|exec_depend\)[^>]*> *\([^<]*\) *<\/\1>.*/\2/p' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ -n "${dep}" ]] || continue
+
+    arch_filter="$(xml_line_attr "${line}" "arch")"
+    xml_arch_matches_current "${arch_filter}" || continue
+
+    if [[ "${dep}" == */* ]]; then
+      resolved="${dep}"
+    else
+      resolved="$(get_pkg_key_by_package_name "${dep}")"
+    fi
+    [[ -n "${resolved}" ]] || continue
+
+    # Current SDK underlay packages live under components/. Ignore ROS/system
+    # packages and any package name that only colcon should resolve.
+    [[ "${resolved}" == components/* ]] || continue
+
+    dep_xml="$(package_xml_path "${resolved}")"
+    if [[ -f "${dep_xml}" ]]; then
+      build_type="$(sed -n 's/.*<build_type>\([^<]*\)<\/build_type>.*/\1/p' "${dep_xml}" 2>/dev/null | head -n 1)"
+      [[ "${build_type}" == "ament_cmake" || "${build_type}" == "ament_python" ]] && continue
+      grep -Eq '<buildtool_depend> *(ament_|rosidl_)' "${dep_xml}" 2>/dev/null && continue
+    fi
+
+    dep_dir="${REPO_ROOT}/${resolved}"
+    is_buildable=0
+    if [[ -f "${dep_dir}/CMakeLists.txt" || -x "${dep_dir}/build.sh" ]]; then
+      is_buildable=1
+    elif [[ "${resolved}" == components/thirdparty/* ]]; then
+      local thirdparty_name overlay_dir
+      thirdparty_name="${resolved#components/thirdparty/}"
+      overlay_dir="${REPO_ROOT}/platform/generic/components/thirdparty/${thirdparty_name}"
+      [[ -f "${overlay_dir}/CMakeLists.txt" || -x "${overlay_dir}/build.sh" ]] && is_buildable=1
+    fi
+    [[ "${is_buildable}" == "1" ]] || continue
+
+    local already_emitted=0
+    local emitted_dep
+    for emitted_dep in "${emitted[@]}"; do
+      if [[ "${emitted_dep}" == "${resolved}" ]]; then
+        already_emitted=1
+        break
+      fi
+    done
+    [[ "${already_emitted}" == "1" ]] && continue
+
+    emitted+=("${resolved}")
+    echo "${resolved}"
+  done < <(grep -E '<(depend|build_depend|build_export_depend|exec_depend)([[:space:]>])' "${pkg_xml}" 2>/dev/null)
+}
+
 # Normalize architecture names used by package.xml platform filters.
 normalize_build_arch() {
   local arch="$1"
