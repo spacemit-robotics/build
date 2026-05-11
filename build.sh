@@ -409,6 +409,14 @@ main() {
           fi
           local pkg_key="${abs_pkg_dir#"${REPO_ROOT}"/}"
           if [[ "${is_ros2_package}" == "1" ]]; then
+            local sdk_dep
+            while IFS= read -r sdk_dep; do
+              [[ -n "${sdk_dep}" ]] || continue
+              (
+                unset SROBOTIS_CMAKE_EXTRA_ARGS
+                build_nonros2_package_deps "${sdk_dep}" 1 "${_want_python_wheels:-0}"
+              )
+            done < <(read_ros2_sdk_nonros2_deps "${pkg_key}")
             if [[ "${deps_mode}" == "with" ]]; then
               SROBOTIS_ROS2_PACKAGE_DEPS_MODE=with build_single_package "${pkg_dir}"
             else

@@ -163,8 +163,9 @@ mm -DBUILD_STREAM_DEMO=ON
 mm -- -DOPT1=ON -DOPT2=OFF
 ```
 
-`mm --with-deps` / `mm --deps` 对 CMake 包解析 SDK 内部 `<depend>` 依赖；对 ROS2 包使用
-colcon 的 workspace 包依赖（`--packages-up-to`）语义。
+`mm --with-deps` / `mm --deps` 对 CMake 包解析 SDK 内部 `<depend>` 依赖；对 ROS2 包会先从标准
+`package.xml` 依赖中预构建可映射到 `components/` 的 SDK underlay 组件，再使用 colcon 的 workspace
+包依赖（`--packages-up-to`）语义。
 
 **方式二：build.sh package**（支持相对路径，无需绝对路径）
 
