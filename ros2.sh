@@ -138,18 +138,27 @@ build_ros2_workspace() {
 
   mkdir -p "${log_base}"
   local console_log="${log_base}/colcon-console.log"
+  local makeflags="${MAKEFLAGS:-}"
+  if [[ ! "${makeflags}" =~ (^|[[:space:]])(-?j[0-9]*|--?jobs([=[:space:]]|$)|-?l[0-9]*|--?load-average([=[:space:]]|$))([[:space:]]|$) ]]; then
+    makeflags="-j${PARALLEL_JOBS} -l${PARALLEL_JOBS}${makeflags:+ ${makeflags}}"
+  fi
+  local colcon_env=(
+    "COLCON_LOG_PATH=${log_base}"
+    "CMAKE_BUILD_PARALLEL_LEVEL=${PARALLEL_JOBS}"
+    "MAKEFLAGS=${makeflags}"
+  )
 
   if [[ "${LOG_LEVEL}" == "verbose" ]]; then
     if [[ "${LOG_TEE}" == "1" ]]; then
-      COLCON_LOG_PATH="${log_base}" colcon build "${colcon_args[@]}" 2>&1 | tee "${console_log}"
+      env "${colcon_env[@]}" colcon build "${colcon_args[@]}" 2>&1 | tee "${console_log}"
       return "${PIPESTATUS[0]}"
     fi
-    COLCON_LOG_PATH="${log_base}" colcon build "${colcon_args[@]}"
+    env "${colcon_env[@]}" colcon build "${colcon_args[@]}"
     return $?
   fi
 
   # quiet/normal: keep console clean; write full output to a file.
-  if ! COLCON_LOG_PATH="${log_base}" colcon build "${colcon_args[@]}" >"${console_log}" 2>&1; then
+  if ! env "${colcon_env[@]}" colcon build "${colcon_args[@]}" >"${console_log}" 2>&1; then
     local rc=$?
     echo "[build] ERROR: ROS2 build failed (rc=${rc}). See log: ${console_log}" >&2
     tail -n "$(_log_tail_lines)" "${console_log}" >&2 || true

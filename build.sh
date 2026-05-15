@@ -31,6 +31,7 @@ BUILD_TARGET_FILE="${BUILD_TARGET_FILE:-}"
 source "${REPO_ROOT}/build/common.sh"
 source "${REPO_ROOT}/build/nonros2.sh"
 source "${REPO_ROOT}/build/ros2.sh"
+source "${REPO_ROOT}/build/docker_build.sh"
 
 # ============================================================================
 # Single package build functions
@@ -248,6 +249,8 @@ clean_build() {
 # ============================================================================
 
 main() {
+  local original_args=("$@")
+
   # Parse global flags that may appear before the command.
   # Supported:
   #   -jN
@@ -258,6 +261,8 @@ main() {
     case "$1" in
       -j*)
         PARALLEL_JOBS="${1#-j}"
+        export PARALLEL_JOBS
+        export SROBOTIS_PARALLEL_JOBS_EXPLICIT=1
         shift
         ;;
       -v)
@@ -295,6 +300,16 @@ main() {
   # Load build configuration if BUILD_TARGET is set
   load_build_config
 
+  if docker_build_command_needs_wrapper "${cmd}" "$@" && docker_build_host_enabled; then
+    if [[ "${SROBOTIS_PARALLEL_JOBS_EXPLICIT:-0}" != "1" && "${SROBOTIS_DOCKER_MAX_JOBS:-1}" == "1" ]]; then
+      PARALLEL_JOBS="$(nproc)"
+      export PARALLEL_JOBS
+      export SROBOTIS_PARALLEL_JOBS_EXPLICIT=1
+    fi
+    run_build_in_docker "${original_args[@]}"
+    exit $?
+  fi
+
   # Whether this invocation needs ROS2 system dependencies.
   # Used by build/common.sh to conditionally include build/package_ros2.xml.
   #
@@ -325,6 +340,10 @@ main() {
       echo "[build] ERROR: System dependency check/installation failed" >&2
       echo "[build] Please install missing dependencies manually or check configuration" >&2
       exit 1
+    fi
+    if [[ "${SROBOTIS_IN_DOCKER_BUILD:-0}" == "1" && "${SROBOTIS_DEPS_ONLY:-0}" == "1" ]]; then
+      echo "[deps] Dependency-only check complete"
+      return 0
     fi
   fi
 
@@ -390,6 +409,10 @@ main() {
         if ! check_and_install_dependencies_for_package "${pkg_dir}"; then
           echo "[build] ERROR: System dependency check/installation failed for this package" >&2
           exit 1
+        fi
+        if [[ "${SROBOTIS_IN_DOCKER_BUILD:-0}" == "1" && "${SROBOTIS_DEPS_ONLY:-0}" == "1" ]]; then
+          echo "[deps] Dependency-only check complete"
+          return 0
         fi
         local is_ros2_package=0
         local pkg_build_type=""
@@ -478,6 +501,22 @@ Environment variables:
   ROS_SETUP           ROS setup script (default: ${ROS_SETUP})
   AUTO_INSTALL_DEPS   Auto-install missing dependencies (yes/true to enable)
   DEBUG_DEPS          Show detailed dependency check output (1 to enable)
+  SROBOTIS_USE_DOCKER_BUILD
+                      1/yes/true/on to run selected k1/k3 builds in Bianbu Docker (default: local build)
+  SROBOTIS_DOCKER_RUN_AS_ROOT
+                      1 to run the build step inside Docker as root; default uses host uid/gid for owned outputs
+  SROBOTIS_DOCKER_PLATFORM
+                      Docker platform for Bianbu images (default: linux/riscv64)
+  SROBOTIS_DOCKER_CONTAINER_NAME
+                      Existing/created Docker container name for x86 Docker builds
+  SROBOTIS_DOCKER_MOUNT_SRC
+                      Host path mounted into Docker (default: HOME, fallback: repo root)
+  SROBOTIS_DOCKER_MOUNT_DST
+                      Container mount path (default: same as SROBOTIS_DOCKER_MOUNT_SRC)
+  SROBOTIS_DOCKER_FIX_OUTPUT_OWNER
+                      1 to chown OUTPUT_ROOT back to host uid/gid after root dependency install (default: 1)
+  SROBOTIS_DOCKER_MAX_JOBS
+                      1 to use host nproc for Docker builds when -j is not explicit (default: 1)
 
 Examples:
   PARALLEL_JOBS=8 ./build/build.sh all
