@@ -399,8 +399,16 @@ load_build_config() {
       config_file="${abs_cfg}"
     fi
     if [[ "${config_file}" != "${REPO_ROOT}/target/"* ]]; then
-      echo "[build] Ignoring external BUILD_TARGET_FILE (not under ${REPO_ROOT}/target): ${config_file}" >&2
-      config_file=""
+      local repo_config_file=""
+      if [[ -n "${BUILD_TARGET:-}" && -f "${REPO_ROOT}/target/${BUILD_TARGET}.json" ]]; then
+        repo_config_file="${REPO_ROOT}/target/${BUILD_TARGET}.json"
+      fi
+      if [[ -n "${repo_config_file}" ]]; then
+        config_file="${repo_config_file}"
+      else
+        echo "[build] Ignoring external BUILD_TARGET_FILE (not under ${REPO_ROOT}/target): ${config_file}" >&2
+        config_file=""
+      fi
     fi
   fi
 
@@ -411,11 +419,16 @@ load_build_config() {
 
   # Export config file path for use by other functions
   export BUILD_CONFIG_FILE="${config_file}"
+  export BUILD_TARGET_FILE="${config_file}"
+  if [[ -z "${BUILD_TARGET:-}" ]]; then
+    BUILD_TARGET="$(basename "${config_file}" .json)"
+    export BUILD_TARGET
+  fi
 
   # Load options from config
   local parallel_jobs_config
   parallel_jobs_config="$(target_parallel_jobs || true)"
-  if [[ -n "${parallel_jobs_config}" ]]; then
+  if [[ -n "${parallel_jobs_config}" && "${SROBOTIS_PARALLEL_JOBS_EXPLICIT:-0}" != "1" ]]; then
     export PARALLEL_JOBS="${parallel_jobs_config}"
   fi
 
@@ -616,6 +629,32 @@ check_system_dependencies() {
   fi
 }
 
+refresh_apt_package_index() {
+  local apt_get_bin="${APT_GET_BIN:-apt-get}"
+  if ! command -v "${apt_get_bin}" >/dev/null 2>&1; then
+    echo "[deps] ERROR: apt-get command not found; cannot refresh package index" >&2
+    return 1
+  fi
+
+  local refresh_cmd=()
+  local refresh_cmd_text
+  if [[ "$(id -u)" -eq 0 ]]; then
+    refresh_cmd=("${apt_get_bin}" "update")
+    refresh_cmd_text="${apt_get_bin} update"
+  elif command -v sudo >/dev/null 2>&1; then
+    refresh_cmd=("sudo" "${apt_get_bin}" "update")
+    refresh_cmd_text="sudo ${apt_get_bin} update"
+  else
+    echo "[deps] ERROR: sudo command not found and current user is not root" >&2
+    echo "[deps] Please refresh apt package index manually as root:" >&2
+    echo "       ${apt_get_bin} update" >&2
+    return 1
+  fi
+
+  echo "[deps] Running: ${refresh_cmd_text}"
+  DEBIAN_FRONTEND=noninteractive "${refresh_cmd[@]}"
+}
+
 install_system_dependencies() {
   local missing_deps="$1"
   local auto_install="${AUTO_INSTALL_DEPS:-}"
@@ -628,6 +667,27 @@ install_system_dependencies() {
 
   echo "[deps] Installing missing dependencies: ${deps_array[*]}"
 
+  local apt_bin="${APT_GET_BIN:-apt-get}"
+  if ! command -v "${apt_bin}" >/dev/null 2>&1; then
+    echo "[deps] ERROR: apt-get command not found; please install manually: ${deps_array[*]}" >&2
+    return 1
+  fi
+
+  local install_cmd=()
+  local install_cmd_text
+  if [[ "$(id -u)" -eq 0 ]]; then
+    install_cmd=("${apt_bin}" "install" "-y")
+    install_cmd_text="${apt_bin} install -y"
+  elif command -v sudo >/dev/null 2>&1; then
+    install_cmd=("sudo" "${apt_bin}" "install" "-y")
+    install_cmd_text="sudo ${apt_bin} install -y"
+  else
+    echo "[deps] ERROR: sudo command not found and current user is not root" >&2
+    echo "[deps] Please install manually as root:" >&2
+    echo "       ${apt_bin} install -y ${deps_array[*]}" >&2
+    return 1
+  fi
+
   if [[ "${auto_install}" != "yes" && "${auto_install}" != "true" ]]; then
     echo "[deps] The following dependencies need to be installed:"
     echo "       ${deps_array[*]}"
@@ -636,21 +696,28 @@ install_system_dependencies() {
 
     if [[ "${answer}" =~ ^[Nn] ]]; then
       echo "[deps] Skipping installation. Please install manually:"
-      echo "       sudo apt install -y ${deps_array[*]}"
+      echo "       ${install_cmd_text} ${deps_array[*]}"
       return 1
     fi
   fi
 
-  if ! sudo -n true 2>/dev/null; then
+  if [[ "${install_cmd[0]}" == "sudo" ]] && ! sudo -n true 2>/dev/null; then
     echo "[deps] Requesting sudo privileges for apt install..."
   fi
 
-  echo "[deps] Running: sudo apt install -y ${deps_array[*]}"
-  if sudo apt install -y "${deps_array[@]}"; then
+  if [[ "${SROBOTIS_IN_DOCKER_BUILD:-0}" == "1" || "${APT_UPDATE_BEFORE_INSTALL:-0}" == "1" ]]; then
+    if ! refresh_apt_package_index; then
+      echo "[deps] ERROR: Failed to refresh apt package index" >&2
+      return 1
+    fi
+  fi
+
+  echo "[deps] Running: ${install_cmd_text} ${deps_array[*]}"
+  if DEBIAN_FRONTEND=noninteractive "${install_cmd[@]}" "${deps_array[@]}"; then
     echo "[deps] Successfully installed dependencies"
     echo "[deps] Verifying installation..."
     for dep in "${deps_array[@]}"; do
-      if dpkg -l | grep -q "^ii.*${dep}"; then
+      if [[ "$(dpkg-query -W -f='${Status}' "${dep}" 2>/dev/null || true)" == "install ok installed" ]]; then
         echo "[deps] ✓ ${dep}: installed and verified"
       else
         echo "[deps] ⚠ ${dep}: installed but verification failed"
@@ -664,30 +731,43 @@ install_system_dependencies() {
 }
 
 check_and_install_dependencies() {
-  # Always run check (build base deps are collected even without BUILD_CONFIG_FILE).
-  if check_system_dependencies; then
-    echo "[deps] All required dependencies are satisfied"
+  if [[ "${SROBOTIS_SKIP_DEPS_CHECK:-0}" == "1" ]]; then
     return 0
   fi
 
-  local missing_deps_str="${MISSING_REQUIRED_DEPS:-}"
-  if [[ -n "${missing_deps_str}" ]]; then
-    if install_system_dependencies "${missing_deps_str}"; then
-      echo "[deps] Re-checking dependencies after installation..."
-      if check_system_dependencies; then
-        echo "[deps] All dependencies are now satisfied"
-        return 0
-      else
-        echo "[deps] ERROR: Some dependencies are still missing after installation" >&2
-        return 1
-      fi
-    else
+  # Always run check (build base deps are collected even without BUILD_CONFIG_FILE).
+  # Dependency discovery can improve after installing base tools such as jq, so
+  # allow another pass to catch target package dependencies on fresh systems.
+  local previous_missing_deps=""
+  local attempts_remaining=3
+  while [[ ${attempts_remaining} -gt 0 ]]; do
+    attempts_remaining=$((attempts_remaining - 1))
+    if check_system_dependencies; then
+      echo "[deps] All required dependencies are satisfied"
+      return 0
+    fi
+
+    local missing_deps_str="${MISSING_REQUIRED_DEPS:-}"
+    if [[ -z "${missing_deps_str}" ]]; then
+      break
+    fi
+
+    if [[ "${missing_deps_str}" == "${previous_missing_deps}" ]]; then
+      echo "[deps] ERROR: Some dependencies are still missing after installation" >&2
+      return 1
+    fi
+    previous_missing_deps="${missing_deps_str}"
+
+    if ! install_system_dependencies "${missing_deps_str}"; then
       echo "[deps] ERROR: Failed to install required dependencies" >&2
       return 1
     fi
-  fi
 
-  return 0
+    echo "[deps] Re-checking dependencies after installation..."
+  done
+
+  echo "[deps] ERROR: Some dependencies are still missing after installation" >&2
+  return 1
 }
 
 # Check and install system dependencies for a single package only (used by build.sh package).
@@ -695,6 +775,10 @@ check_and_install_dependencies() {
 check_and_install_dependencies_for_package() {
   local pkg_arg="$1"
   [[ -z "${pkg_arg}" ]] && return 0
+
+  if [[ "${SROBOTIS_SKIP_DEPS_CHECK:-0}" == "1" ]]; then
+    return 0
+  fi
 
   local pkg_key
   if [[ -d "${pkg_arg}" ]]; then
