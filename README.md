@@ -16,13 +16,14 @@
 | 目标配置   | `target/*.json` 指定启用包、包选项、并行数等                          |
 | 输出布局   | `output/staging` 安装前缀，`output/rootfs` 部署目录（deploy-rootfs） |
 | 依赖       | 系统依赖检查与可选自动安装（apt），包级依赖解析                       |
+| Docker 构建 | 显式设置 `SROBOTIS_USE_DOCKER_BUILD=1` 后进入 Bianbu Docker 编译环境  |
 | Python 环境 | `m_env_build`、`python_env_build.sh` 为应用构建虚拟环境          |
 | Python wheel | 可选：在 **non-ROS2** 包安装成功后，用 PEP 517 生成 `.whl` 到 `output/wheels/`（见下文） |
 
 | 类别       | 不支持 / 说明                                                       |
 | ---------- | -------------------------------------------------------------------- |
 | 其他构建系统 | 仅支持 CMake 与 ROS2 colcon，不负责其他语言/框架的构建               |
-| 交叉编译   | 脚本默认本机构建；交叉编译需自行设置工具链与环境                     |
+| 交叉编译   | 默认走本地环境；Bianbu Docker 需通过 `SROBOTIS_USE_DOCKER_BUILD=1` 显式启用 |
 
 ## 环境准备
 
@@ -44,6 +45,52 @@ sudo apt-get install -y build-essential cmake pkg-config jq
 ### ROS2 依赖
 
 若目标包含 ROS2 包（`middleware/ros2/`、`application/ros2/`），需先安装 ROS2 并加载环境，具体安装方式待补充。
+
+### Docker 编译
+
+默认使用本地环境编译，不会根据 x86/amd64 主机环境自动进入 Docker。如果需要使用 Bianbu Docker
+编译，需显式设置 `SROBOTIS_USE_DOCKER_BUILD=1`。在已经通过 `lunch` 或 `BUILD_TARGET` 选择了
+k1/k3 target 后，`m`、`mm` 和 `./build/build.sh all|cmake|ros2|package <dir>` 会进入 Docker
+编译环境，外部命令用法不变。
+
+- k1 target 使用 `bianbu:2.3`，若本地没有则执行 `docker pull harbor.spacemit.com/bianbu/bianbu:2.3`
+- k3 target 使用 `bianbu:4.0`，若本地没有则执行 `docker pull harbor.spacemit.com/bianbu/bianbu:4.0`
+- 如果未安装 Docker，构建入口会提示先安装和配置 Docker 环境。
+- 默认以 `linux/riscv64` 平台启动 Bianbu 镜像。
+- Docker 容器会保留并复用：同一 bianbu 版本的容器已运行时直接 `docker exec`，
+  已存在但停止时先 `docker start`，不存在时才创建。
+- 新建容器默认挂载宿主 HOME 到容器相同路径，因此同一 HOME 下不同 SDK 源码目录会复用同一个容器。
+- 当 target 配置启用 `auto_resolve_dependencies` 时，会先以 root 在 Docker 内安装系统依赖；
+  实际编译步骤默认使用宿主 uid/gid，避免 output 产物变成 root-owned。
+- 依赖安装后会默认把当前仓库的 `output/` 属主修正回宿主 uid/gid，避免历史 root-owned 文件阻塞后续编译。
+- Docker 构建中如果未显式指定 `-jN`，默认使用宿主 `nproc` 作为并行度，以加快编译。
+- Docker 封装逻辑在 `build/docker_build.sh`，`build/build.sh` 只保留入口判断；板端直接编译不会进入
+  Docker 流程。
+
+可通过环境变量调整：
+
+```bash
+# 显式启用 Bianbu Docker 编译
+SROBOTIS_USE_DOCKER_BUILD=1 ./build/build.sh all
+
+# 强制编译步骤也在容器内以 root 运行
+SROBOTIS_DOCKER_RUN_AS_ROOT=1 ./build/build.sh all
+
+# 覆盖 Docker 平台
+SROBOTIS_DOCKER_PLATFORM=linux/riscv64 ./build/build.sh all
+
+# 覆盖默认容器名
+SROBOTIS_DOCKER_CONTAINER_NAME=srobotis-k3-build ./build/build.sh all
+
+# 覆盖 Docker 挂载范围
+SROBOTIS_DOCKER_MOUNT_SRC=/home/user SROBOTIS_DOCKER_MOUNT_DST=/home/user ./build/build.sh all
+
+# 禁用自动修正 output 属主
+SROBOTIS_DOCKER_FIX_OUTPUT_OWNER=0 ./build/build.sh all
+
+# Docker 构建不自动使用最大线程，改回 target/环境中的 PARALLEL_JOBS
+SROBOTIS_DOCKER_MAX_JOBS=0 ./build/build.sh all
+```
 
 ## 依赖检查机制
 
@@ -94,7 +141,8 @@ sudo apt-get install -y build-essential cmake pkg-config jq
 ```
 
 依赖检查失败时，构建系统会汇总缺失的 required 依赖，并提示安装；设置
-`AUTO_INSTALL_DEPS=yes` 或 `AUTO_INSTALL_DEPS=true` 时会直接执行 `sudo apt install -y ...`。
+`AUTO_INSTALL_DEPS=yes` 或 `AUTO_INSTALL_DEPS=true` 时会直接执行依赖安装。以 root 运行时使用
+`apt install -y ...`，非 root 运行且存在 sudo 时使用 `sudo apt install -y ...`。
 
 ## 如何编译
 
