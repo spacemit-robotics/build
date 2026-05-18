@@ -59,6 +59,10 @@ export SROBOTIS_OUTPUT_STAGING="${SROBOTIS_OUTPUT_ROOT}/staging"
 export SROBOTIS_OUTPUT_ROOTFS="${SROBOTIS_OUTPUT_ROOT}/rootfs"
 export SROBOTIS_OUTPUT="${SROBOTIS_OUTPUT_STAGING}"
 
+# Docker build is opt-in for each freshly sourced SDK shell. Re-sourcing this
+# file intentionally disables it until m_enable_docker_build is run again.
+export SROBOTIS_USE_DOCKER_BUILD=0
+
 
 if [[ -n "${PREFIX-}" ]]; then
   case "${PREFIX}" in
@@ -140,6 +144,43 @@ m_env_build() {
     cd "${SROBOTIS_ROOT}" || exit 1
     ./build/python_env_build.sh "$@"
   )
+}
+
+# Convenience function: enable or disable Docker builds in the current shell.
+# Usage (after sourcing this file):
+#   m_enable_docker_build
+#   m_enable_docker_build disable
+m_enable_docker_build() {
+  local action="${1:-enable}"
+
+  if [[ $# -gt 1 ]]; then
+    echo "Usage: m_enable_docker_build [disable]" >&2
+    return 1
+  fi
+
+  case "${action}" in
+    enable|on|1|true|yes)
+      export SROBOTIS_USE_DOCKER_BUILD=1
+      echo "[docker] Docker build enabled for this shell."
+      ;;
+    disable|off|0|false|no)
+      export SROBOTIS_USE_DOCKER_BUILD=0
+      echo "[docker] Docker build disabled for this shell."
+      ;;
+    -h|--help)
+      cat <<EOF
+Usage: m_enable_docker_build [disable]
+
+Enable Bianbu Docker builds for this sourced SDK shell.
+Re-source build/envsetup.sh to reset Docker builds back to disabled.
+EOF
+      ;;
+    *)
+      echo "[docker] ERROR: Unknown option: ${action}" >&2
+      echo "Usage: m_enable_docker_build [disable]" >&2
+      return 1
+      ;;
+  esac
 }
 
 # Convenience function: create a wheel-build Python virtual environment
@@ -724,6 +765,8 @@ srobot_help() {
   m [options] [clean]          Build from repo root (all, -C CMake, -R ROS2, -j jobs)
   mm [options] [clean]         Build single package (auto-detect type, supports custom scripts)
   mm --with-deps / --deps      Build current package with deps, or only deps
+  m_enable_docker_build        Enable Docker build for this sourced shell
+  m_enable_docker_build disable  Disable Docker build for this sourced shell
   venv <python_version>        Create and activate .venv for wheel builds via uv
   m_env_build <app_dir>        Build Python env from pyproject.toml
   m -py / mm -py               Opt-in: pass --py to build.sh for Python wheels after install
@@ -770,3 +813,4 @@ echo "[env] ROS_DISTRO=${ROS_DISTRO}"
 echo "[env] ROS_SETUP=${ROS_SETUP}"
 echo "[env] PATH now includes: ${PREFIX}/bin"
 echo "[env] LD_LIBRARY_PATH now includes: ${PREFIX}/lib"
+echo "[env] Docker build disabled; run m_enable_docker_build to enable it."
