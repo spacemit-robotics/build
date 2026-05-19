@@ -546,17 +546,20 @@ collect_system_dependencies() {
     fi
   fi
 
-  if [[ -z "${config_file}" || ! -f "${config_file}" ]]; then
-    return 0
-  fi
-
-  if ! has_jq; then
-    echo "[deps] WARNING: jq not available, skipping target package dependency check" >&2
-    return 0
-  fi
-
   local enabled_all=()
-  mapfile -t enabled_all < <(resolve_enabled_with_metadata)
+  if [[ -n "${config_file}" && -f "${config_file}" ]]; then
+    if ! has_jq; then
+      echo "[deps] WARNING: jq not available, skipping target package dependency check" >&2
+      return 0
+    fi
+    mapfile -t enabled_all < <(resolve_enabled_with_metadata)
+  elif [[ "${BUILD_NEEDS_NONROS2:-0}" == "1" ]] && command -v discover_all_nonros2_packages >/dev/null 2>&1; then
+    # No target selected: match build_nonros2_enabled_packages(), which builds
+    # every discovered non-ROS2 package for all/cmake commands in this mode.
+    mapfile -t enabled_all < <(discover_all_nonros2_packages | sort -u)
+  else
+    return 0
+  fi
 
   for pkg_path in "${enabled_all[@]}"; do
     while IFS='|' read -r dep_type dep_name check_cmd; do

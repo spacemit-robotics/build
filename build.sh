@@ -318,19 +318,38 @@ main() {
     exit $?
   fi
 
+  # Whether this invocation builds non-ROS2 packages without a target config.
+  # Used by build/common.sh to decide whether no-target dependency discovery
+  # should scan all buildable non-ROS2 packages.
+  case "${cmd}" in
+    all|cmake|C)
+      export BUILD_NEEDS_NONROS2=1
+      ;;
+    *)
+      export BUILD_NEEDS_NONROS2=0
+      ;;
+  esac
+
   # Whether this invocation needs ROS2 system dependencies.
   # Used by build/common.sh to conditionally include build/package_ros2.xml.
   #
   # Rules:
   # - ros2/R always needs ROS2 deps
-  # - all only needs ROS2 deps if the selected target actually enables ROS2 packages
+  # - all without a selected target builds full ROS2 workspaces when they exist
+  # - all with a selected target needs ROS2 deps only if that target enables ROS2 packages
   # - cmake/C never needs ROS2 deps
   case "${cmd}" in
     ros2|R)
       export BUILD_NEEDS_ROS2=1
       ;;
     all)
-      if target_needs_ros2; then
+      if [[ -z "${BUILD_CONFIG_FILE:-}" || ! -f "${BUILD_CONFIG_FILE}" ]]; then
+        if [[ -d "${REPO_ROOT}/middleware/ros2" || -d "${REPO_ROOT}/application/ros2" ]]; then
+          export BUILD_NEEDS_ROS2=1
+        else
+          export BUILD_NEEDS_ROS2=0
+        fi
+      elif target_needs_ros2; then
         export BUILD_NEEDS_ROS2=1
       else
         export BUILD_NEEDS_ROS2=0
