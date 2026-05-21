@@ -101,6 +101,10 @@ SROBOTIS_DOCKER_CONTAINER_NAME=srobotis-k3-build ./build/build.sh all
 # 覆盖 Docker 挂载范围
 SROBOTIS_DOCKER_MOUNT_SRC=/home/user SROBOTIS_DOCKER_MOUNT_DST=/home/user ./build/build.sh all
 
+# 透传宿主设备到 Docker，多个设备可用逗号或空格分隔
+SROBOTIS_DOCKER_DEVICES=/dev/tcm ./build/build.sh all
+SROBOTIS_DOCKER_DEVICES="/dev/tcm,/dev/null:/dev/null" ./build/build.sh all
+
 # 禁用自动修正 output 属主
 SROBOTIS_DOCKER_FIX_OUTPUT_OWNER=0 ./build/build.sh all
 
