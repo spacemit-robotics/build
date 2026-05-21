@@ -25,6 +25,46 @@
 | 其他构建系统 | 仅支持 CMake 与 ROS2 colcon，不负责其他语言/框架的构建               |
 | 交叉编译   | 默认走本地环境；Bianbu Docker 需通过 `m_enable_docker_build` 或 `SROBOTIS_USE_DOCKER_BUILD=1` 显式启用 |
 
+## 用户场景与预期效果
+
+本节作为构建系统的行为验收标准。下表中的 `m`、`mm` 是 `source build/envsetup.sh`
+后提供的快捷命令；脚本或 CI 也可以直接调用等价的 `./build/build.sh ...` 入口。
+
+`mm` 的依赖语义与是否选择 target 无关：普通 `mm` 只构建当前包，`mm --with-deps`
+递归构建当前包声明的 SDK 依赖并构建当前包，`mm --deps` 只递归构建依赖。`lunch`
+只提供 target 上下文，例如包选项、平台/Docker 选择和 target 相关环境；只有 `m` /
+`build.sh all|cmake|ros2` 这类全量或分类型构建才以 target `enabled_packages` 作为构建根集合。
+
+### 构建系统命令场景
+
+| 编号 | 场景 | 示例命令 | 预期效果 |
+| ---- | ---- | -------- | -------- |
+| B1 | 不选择 target，单独编译一个 non-ROS2 包 | `./build/build.sh package components/foo` | 不要求先 `lunch`；只编译当前包；检查基础构建依赖和当前包系统依赖；产物安装到 `output/staging`；不主动编译 SDK 依赖包。 |
+| B2 | 不选择 target，编译一个 non-ROS2 包及其依赖 | `./build/build.sh package application/native/app --with-deps` | 递归解析 SDK `<depend>` 闭包；按依赖顺序构建依赖包后再构建当前包；检查当前包和所有依赖包的 `<system_depend>`；依赖环、缺失依赖、不可构建依赖应明确失败。 |
+| B3 | 不选择 target，只编译一个 non-ROS2 包的依赖 | `./build/build.sh package application/native/app --deps` | 递归构建当前包的 SDK 依赖闭包，但不构建当前包自身；系统依赖检查范围与 `--with-deps` 一致。 |
+| B4 | 选择 target 后，单独编译一个 non-ROS2 包 | `lunch k3-xxx && mm` | 依赖语义与未选择 target 的 `mm` 相同：只编译当前包；target 只影响包选项、平台/Docker 等上下文，不因为 target 中启用了其他包就触发全量构建。 |
+| B5 | 选择 target 后，编译 non-ROS2 包及其依赖 | `lunch k3-xxx && mm --with-deps` | 依赖语义与未选择 target 的 `mm --with-deps` 相同：以当前包为根递归构建 SDK 依赖，再构建当前包；target/Docker 环境只提供构建上下文。 |
+| B6 | 单独编译 ROS2 包 | `./build/build.sh package application/ros2/demo` | 根据 `package.xml` 的 `ament_cmake` / `ament_python` 识别 ROS2 包；加载 `ROS_SETUP`；执行 `colcon build --packages-select <pkg>`；不构建整个 ROS2 workspace。 |
+| B7 | 编译 ROS2 包及其依赖 | `./build/build.sh package application/ros2/demo --with-deps` | 先构建 ROS2 包声明中可映射到 SDK non-ROS2 组件的 underlay 依赖；这些 SDK 依赖也要递归处理；再执行 `colcon build --packages-up-to <pkg>`。 |
+| B8 | 只编译 ROS2 包的依赖 | `./build/build.sh package application/ros2/demo --deps` | 准备可映射的 SDK underlay 依赖；通过 `colcon list --packages-up-to` 找到 ROS2 依赖包；只构建依赖包，不构建当前 ROS2 包。 |
+| B9 | 选择 target 后全量构建 | `lunch k3-xxx && m` 或 `BUILD_TARGET=k3-xxx ./build/build.sh all` | 读取 target `enabled_packages` 并递归展开 SDK 依赖；先构建需要的 non-ROS2 包，再构建需要的 ROS2 middleware/application；完成后生成 `output/rootfs`。 |
+| B10 | 不选择 target 全量构建 | `./build/build.sh all` | 作为开发 fallback，发现并构建仓库内可构建的 non-ROS2 包；存在 ROS2 workspace 时尝试构建 ROS2；正式板级验证应优先使用 target。 |
+| B11 | 只构建 non-ROS2 / CMake 包 | `m -C` 或 `./build/build.sh cmake` | 只执行 non-ROS2 构建；选择 target 时按 target 包集合构建，不选择 target 时按仓库发现结果构建；不调用 colcon。 |
+| B12 | 只构建 ROS2 包 | `m -R` 或 `./build/build.sh ros2` | 加载 ROS 环境并构建 ROS2 middleware/application；选择 target 时只构建 target 关联 ROS2 包；不执行无关 non-ROS2 全量构建。 |
+| B13 | 全量清理 | `m clean` 或 `./build/build.sh clean all` | 清理 `output/build`、`output/staging`、`output/rootfs` 以及 ROS2 build/log 目录；不删除源码和用户工作区文件。 |
+| B14 | 清理单个 non-ROS2 包 | `./build/build.sh package components/foo clean` | 只清理该包的 CMake build 目录，例如 `output/build/cmake/pkgs/components_foo`；不清理整个 staging，不影响其他包。 |
+| B15 | 清理单个 ROS2 包 | `./build/build.sh package application/ros2/demo clean` | 应清理该包 ROS2 build 目录和 install 输出，包括 `output/staging/share/<pkg>`、`output/staging/lib/<pkg>`、ament index、colcon registry 等。 |
+| B16 | 使用 Bianbu Docker 构建 | `SROBOTIS_USE_DOCKER_BUILD=1 BUILD_TARGET=k3-xxx ./build/build.sh all` | k1 target 使用 `bianbu:2.3`，k3 target 使用 `bianbu:4.0`；先以 root 检查/安装系统依赖，再用默认构建用户执行真实构建；外部命令语义与真机构建保持一致。 |
+
+### CI 调用场景
+
+CI 不定义新的构建语义，只负责在合适的时机调用上面的构建入口，并收集结果、日志和通知。
+
+| 编号 | 场景 | CI 调用方式 | 预期效果 |
+| ---- | ---- | ----------- | -------- |
+| C1 | PR 单组件验证 | `build.sh package <module>`，必要时附加 `--with-deps` 或 target 信息 | 只验证 PR 相关模块；lint、构建和模块 `test.yaml` 分阶段报告；如果修改了 `package.xml`、`build`、`target` 或 `scripts/test`，额外运行构建系统测试。 |
+| C2 | Nightly / release target 全编译 | `BUILD_TARGET=<target> ./build/build.sh all` | 先运行构建系统自测，再执行 target 全量构建和 target 范围测试；归档构建日志、测试报告和 rootfs；失败时能区分依赖、编译、ROS2、rootfs 或测试阶段。 |
+
 ## 环境准备
 
 ### 基础要求
