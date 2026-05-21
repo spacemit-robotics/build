@@ -520,10 +520,49 @@ build_nonros2_enabled_packages() {
   return 0
 }
 
-build_nonros2_package_deps() {
+nonros2_deps_has_key() {
+  local key="$1"
+  shift
+  local item
+  for item in "$@"; do
+    [[ "${item}" == "${key}" ]] && return 0
+  done
+  return 1
+}
+
+resolve_nonros2_dep_pkg_key() {
+  local dep="$1"
+  if [[ "${dep}" == */* ]]; then
+    echo "${dep}"
+    return 0
+  fi
+
+  local dep_dir
+  dep_dir="$(pkg_key_to_dir "${dep}")"
+  if [[ -d "${dep_dir}" ]]; then
+    echo "${dep}"
+    return 0
+  fi
+
+  local matches=()
+  local candidate
+  while IFS= read -r candidate; do
+    [[ -n "${candidate}" ]] || continue
+    [[ "${candidate##*/}" == "${dep}" ]] || continue
+    matches+=("${candidate}")
+  done < <(discover_all_nonros2_packages)
+
+  if [[ ${#matches[@]} -eq 1 ]]; then
+    echo "${matches[0]}"
+    return 0
+  fi
+
+  echo "${dep}"
+}
+
+resolve_nonros2_dependency_closure() {
   local root_pkg="$1"
   local include_self="${2:-0}"
-  local want_py_wheels="${3:-0}"
 
   [[ -n "${root_pkg}" ]] || { echo "[build] ERROR: Package key required" >&2; return 1; }
 
@@ -531,53 +570,13 @@ build_nonros2_package_deps() {
   local visiting=()
   local visited=()
 
-  _deps_resolve_pkg_key() {
-    local dep="$1"
-    if [[ "${dep}" == */* ]]; then
-      echo "${dep}"
-      return 0
-    fi
-
-    local dep_dir
-    dep_dir="$(pkg_key_to_dir "${dep}")"
-    if [[ -d "${dep_dir}" ]]; then
-      echo "${dep}"
-      return 0
-    fi
-
-    local matches=()
-    local candidate
-    while IFS= read -r candidate; do
-      [[ -n "${candidate}" ]] || continue
-      [[ "${candidate##*/}" == "${dep}" ]] || continue
-      matches+=("${candidate}")
-    done < <(discover_all_nonros2_packages)
-
-    if [[ ${#matches[@]} -eq 1 ]]; then
-      echo "${matches[0]}"
-      return 0
-    fi
-
-    echo "${dep}"
-  }
-
-  _deps_has_key() {
-    local key="$1"
-    shift
-    local item
-    for item in "$@"; do
-      [[ "${item}" == "${key}" ]] && return 0
-    done
-    return 1
-  }
-
-  _deps_visit_pkg() {
+  _nonros2_deps_visit_pkg() {
     local pkg="$1"
 
-    if _deps_has_key "${pkg}" "${visited[@]}"; then
+    if nonros2_deps_has_key "${pkg}" "${visited[@]}"; then
       return 0
     fi
-    if _deps_has_key "${pkg}" "${visiting[@]}"; then
+    if nonros2_deps_has_key "${pkg}" "${visiting[@]}"; then
       echo "[build] ERROR: Dependency cycle detected at package: ${pkg}" >&2
       return 1
     fi
@@ -587,7 +586,7 @@ build_nonros2_package_deps() {
     local dep
     while IFS= read -r dep; do
       [[ -n "${dep}" ]] || continue
-      dep="$(_deps_resolve_pkg_key "${dep}")"
+      dep="$(resolve_nonros2_dep_pkg_key "${dep}")"
 
       if pkg_key_is_ros2 "${dep}"; then
         echo "[build] ERROR: mm --with-deps/--deps only supports non-ROS2 SDK dependencies: ${pkg} -> ${dep}" >&2
@@ -607,7 +606,7 @@ build_nonros2_package_deps() {
         return 1
       fi
 
-      _deps_visit_pkg "${dep}" || return $?
+      _nonros2_deps_visit_pkg "${dep}" || return $?
     done < <(read_package_deps "${pkg}")
 
     local next_visiting=()
@@ -624,7 +623,26 @@ build_nonros2_package_deps() {
     fi
   }
 
-  _deps_visit_pkg "${root_pkg}" || return $?
+  _nonros2_deps_visit_pkg "${root_pkg}" || return $?
+
+  printf '%s\n' "${ordered[@]}"
+}
+
+build_nonros2_package_deps() {
+  local root_pkg="$1"
+  local include_self="${2:-0}"
+  local want_py_wheels="${3:-0}"
+
+  [[ -n "${root_pkg}" ]] || { echo "[build] ERROR: Package key required" >&2; return 1; }
+
+  local ordered=()
+  local closure_output
+  if ! closure_output="$(resolve_nonros2_dependency_closure "${root_pkg}" "${include_self}")"; then
+    return 1
+  fi
+  if [[ -n "${closure_output}" ]]; then
+    mapfile -t ordered <<< "${closure_output}"
+  fi
 
   if [[ ${#ordered[@]} -eq 0 ]]; then
     echo "[build] No SDK dependencies to build for package: ${root_pkg}"
