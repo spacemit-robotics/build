@@ -1,0 +1,74 @@
+version: 1
+module: build
+
+_pytest_env: &pytest_env
+  python: python3
+  install:
+    - pytest
+
+tests:
+  - name: build-mm-flows
+    description: Covers common mm and mm --with-deps package build flows with and without a selected target.
+    category: functional
+    scopes: [pr, scheduled]
+    timeout_s: 300
+    workdir: sdk
+    python_env: *pytest_env
+    command: |
+      set -euo pipefail
+      python -m pytest build/tests -q -k "package_without_lunch or target_package_build_keeps_mm_scoped or target_package_with_deps_uses_requested_package_dependency_root or package_deps_builds_dependencies_but_not_root or package_deps_builds_transitive_dependencies_but_not_root or package_with_deps_detects_dependency_cycle"
+
+  - name: build-dependency-sysdeps
+    description: Verifies transitive SDK dependencies and system dependency checks for package builds.
+    category: functional
+    scopes: [pr, scheduled]
+    timeout_s: 300
+    workdir: sdk
+    python_env: *pytest_env
+    command: |
+      set -euo pipefail
+      python -m pytest build/tests -q -k "package_with_deps_installs_dependency_system_dep_by_basename or package_with_deps_builds_transitive_sdk_deps_and_checks_system_deps or package_with_deps_filters_dependency_system_deps_by_arch or package_dependency_system_deps_are_deduplicated or package_dependency_custom_check_must_pass_after_install or target_with_deps_installs_dependency_system_deps"
+
+  - name: build-target-full-flows
+    description: Checks target-driven full build selection across non-ROS2, ROS2, and rootfs packages.
+    category: functional
+    scopes: [pr, scheduled]
+    timeout_s: 300
+    workdir: sdk
+    python_env: *pytest_env
+    command: |
+      set -euo pipefail
+      python -m pytest build/tests -q -k "external_build_target_file_is_ignored or target_package_options_are_passed_to_peripheral_cmake or target_all_builds_nonros2_ros2_and_rootfs or all_without_target_builds_discovered_nonros2_and_ros2_workspaces or cmake_without_target_builds_discovered_nonros2_only or ros2_target_build_selects_target_ros2_packages_only"
+
+  - name: build-ros2-flows
+    description: Validates ROS2 package build and dependency ordering behavior.
+    category: functional
+    scopes: [pr, scheduled]
+    timeout_s: 300
+    workdir: sdk
+    python_env: *pytest_env
+    command: |
+      set -euo pipefail
+      python -m pytest build/tests -q -k "ros2_package_with_deps_uses_packages_up_to or ros2_package_build_selects_requested_package or ros2_package_with_deps_builds_transitive_sdk_underlay_first or ros2_package_deps_builds_only_ros2_dependencies"
+
+  - name: build-clean-rootfs-flows
+    description: Verifies clean commands and rootfs deployment cleanup behavior.
+    category: functional
+    scopes: [pr, scheduled]
+    timeout_s: 300
+    workdir: sdk
+    python_env: *pytest_env
+    command: |
+      set -euo pipefail
+      python -m pytest build/tests -q -k "clean_all_removes_build_staging_and_rootfs or package_clean_removes_nonros2_package_build_dir or package_clean_removes_ros2_package_build_and_install_outputs or deploy_rootfs_strips_development_files"
+
+  - name: build-docker-flows
+    description: Checks Docker wrapper command generation and target image selection behavior.
+    category: functional
+    scopes: [pr, scheduled]
+    timeout_s: 300
+    workdir: sdk
+    python_env: *pytest_env
+    command: |
+      set -euo pipefail
+      python -m pytest build/tests -q -k 'docker_wrapper'
