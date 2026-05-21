@@ -433,7 +433,7 @@ main() {
         fi
         clean_single_package "${pkg_dir}"
       else
-        if ! check_and_install_dependencies_for_package "${pkg_dir}"; then
+        if ! check_and_install_dependencies_for_package "${pkg_dir}" "${deps_mode}"; then
           echo "[build] ERROR: System dependency check/installation failed for this package" >&2
           exit 1
         fi

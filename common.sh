@@ -773,20 +773,35 @@ check_and_install_dependencies() {
   return 1
 }
 
-# Check and install system dependencies for a single package only (used by build.sh package).
-# Always checks build base deps first, then the given package. Argument: pkg_dir or pkg_key (e.g. components/model_zoo/llm).
+# Check and install system dependencies for a package build.
+# Always checks build base deps first. Optional deps_mode:
+# - none: current package only
+# - with: current package plus SDK dependency closure
+# - only: SDK dependency closure only
 check_and_install_dependencies_for_package() {
   local pkg_arg="$1"
+  local deps_mode="${2:-none}"
   [[ -z "${pkg_arg}" ]] && return 0
 
   if [[ "${SROBOTIS_SKIP_DEPS_CHECK:-0}" == "1" ]]; then
     return 0
   fi
 
+  case "${deps_mode}" in
+    none|with|only)
+      ;;
+    *)
+      echo "[deps] ERROR: Unknown dependency mode for package check: ${deps_mode}" >&2
+      return 1
+      ;;
+  esac
+
   local pkg_key
+  local pkg_dir_for_type=""
   if [[ -d "${pkg_arg}" ]]; then
     local abs_dir
     abs_dir="$(cd "${pkg_arg}" && pwd)"
+    pkg_dir_for_type="${abs_dir}"
     if [[ "${abs_dir}" == "${REPO_ROOT}/"* ]]; then
       pkg_key="${abs_dir#"${REPO_ROOT}"/}"
     else
@@ -794,6 +809,9 @@ check_and_install_dependencies_for_package() {
     fi
   else
     pkg_key="${pkg_arg}"
+    if [[ -d "${REPO_ROOT}/${pkg_key}" ]]; then
+      pkg_dir_for_type="${REPO_ROOT}/${pkg_key}"
+    fi
   fi
 
   echo "[deps] Checking system dependencies for package: ${pkg_key}"
@@ -807,11 +825,13 @@ check_and_install_dependencies_for_package() {
     done < <(read_package_sysdeps_lines "build")
   fi
 
+  local is_ros2_package=0
   # If this is a ROS2 package (ament_*), also require ROS2 system deps.
-  if [[ -d "${pkg_arg}" && -f "${pkg_arg}/package.xml" ]]; then
+  if [[ -n "${pkg_dir_for_type}" && -f "${pkg_dir_for_type}/package.xml" ]]; then
     local build_type
-    build_type="$(get_package_build_type "${pkg_arg}" || true)"
+    build_type="$(get_package_build_type "${pkg_dir_for_type}" || true)"
     if [[ "${build_type}" == "ament_cmake" || "${build_type}" == "ament_python" ]]; then
+      is_ros2_package=1
       local ros2_deps_xml="${REPO_ROOT}/build/package_ros2.xml"
       if [[ -f "${ros2_deps_xml}" ]] && grep -q '<system_depend' "${ros2_deps_xml}" 2>/dev/null; then
         while IFS='|' read -r dep_type dep_name check_cmd; do
@@ -822,10 +842,47 @@ check_and_install_dependencies_for_package() {
     fi
   fi
 
-  while IFS='|' read -r dep_type dep_name check_cmd; do
-    [[ -z "${dep_type}" || -z "${dep_name}" || -z "${check_cmd}" ]] && continue
-    deps_lines+=("${dep_type}|${dep_name}|${check_cmd}")
-  done < <(read_package_sysdeps_lines "${pkg_key}")
+  if [[ "${deps_mode}" != "only" ]]; then
+    while IFS='|' read -r dep_type dep_name check_cmd; do
+      [[ -z "${dep_type}" || -z "${dep_name}" || -z "${check_cmd}" ]] && continue
+      deps_lines+=("${dep_type}|${dep_name}|${check_cmd}")
+    done < <(read_package_sysdeps_lines "${pkg_key}")
+  fi
+
+  if [[ "${deps_mode}" != "none" ]]; then
+    if ! command -v resolve_nonros2_dependency_closure >/dev/null 2>&1; then
+      echo "[deps] ERROR: non-ROS2 dependency resolver is not available" >&2
+      return 1
+    fi
+
+    local dep_roots=()
+    if [[ "${is_ros2_package}" == "1" ]]; then
+      mapfile -t dep_roots < <(read_ros2_sdk_nonros2_deps "${pkg_key}")
+    else
+      dep_roots=("${pkg_key}")
+    fi
+
+    local dep_root closure_output dep_pkg
+    for dep_root in "${dep_roots[@]}"; do
+      [[ -n "${dep_root}" ]] || continue
+
+      local include_dep_root=0
+      [[ "${is_ros2_package}" == "1" ]] && include_dep_root=1
+
+      if ! closure_output="$(resolve_nonros2_dependency_closure "${dep_root}" "${include_dep_root}")"; then
+        return 1
+      fi
+      [[ -n "${closure_output}" ]] || continue
+
+      while IFS= read -r dep_pkg; do
+        [[ -n "${dep_pkg}" ]] || continue
+        while IFS='|' read -r dep_type dep_name check_cmd; do
+          [[ -z "${dep_type}" || -z "${dep_name}" || -z "${check_cmd}" ]] && continue
+          deps_lines+=("${dep_type}|${dep_name}|${check_cmd}")
+        done < <(read_package_sysdeps_lines "${dep_pkg}")
+      done <<< "${closure_output}"
+    done
+  fi
 
   if [[ ${#deps_lines[@]} -eq 0 ]]; then
     echo "[deps] No system dependencies defined for this package"

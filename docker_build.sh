@@ -233,6 +233,28 @@ docker_path_is_or_under() {
   [[ "${child}" == "${parent}" || "${child}" == "${parent}/"* ]]
 }
 
+append_configured_docker_devices() {
+  local raw_devices="${SROBOTIS_DOCKER_DEVICES:-}"
+  [[ -n "${raw_devices}" ]] || return 0
+
+  local normalized_devices="${raw_devices//,/ }"
+  local device_spec host_path
+  for device_spec in ${normalized_devices}; do
+    [[ -n "${device_spec}" ]] || continue
+    host_path="${device_spec%%:*}"
+    if [[ "${host_path}" != /dev/* ]]; then
+      echo "[docker] ERROR: SROBOTIS_DOCKER_DEVICES entries must start with /dev/: ${device_spec}" >&2
+      return 1
+    fi
+    if [[ ! -e "${host_path}" ]]; then
+      echo "[docker] ERROR: Docker device does not exist: ${host_path}" >&2
+      return 1
+    fi
+    echo "[docker] Adding device: ${device_spec}"
+    docker_device_args+=(--device "${device_spec}")
+  done
+}
+
 ensure_bianbu_docker_container() {
   local container_name="$1"
   local image="$2"
@@ -270,11 +292,15 @@ ensure_bianbu_docker_container() {
     docker_volume_args+=(--volume "${REPO_ROOT}:${REPO_ROOT}")
   fi
 
+  local docker_device_args=()
+  append_configured_docker_devices || return 1
+
   docker run -d \
     --name "${container_name}" \
     --platform "${SROBOTIS_DOCKER_PLATFORM:-linux/riscv64}" \
     --workdir "${REPO_ROOT}" \
     "${docker_volume_args[@]}" \
+    "${docker_device_args[@]}" \
     "${DOCKER_ENV_ARGS[@]}" \
     --user "0:0" \
     -e "HOME=/root" \
