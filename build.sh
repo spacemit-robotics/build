@@ -8,7 +8,7 @@ set -euo pipefail
 
 # SDK root = one level above this script
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUTPUT_ROOT="${REPO_ROOT}/output"
+OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO_ROOT}/output}"
 
 # Prefix/layout defaults (can be overridden by env)
 CM_BUILD_ROOT="${OUTPUT_ROOT}/build/cmake"
@@ -184,7 +184,41 @@ clean_single_package() {
         cleaned=true
       fi
     fi
-    
+
+    if [[ -d "${PREFIX}/share/${pkg_name}" ]]; then
+      echo "[build] Removing install directory: ${PREFIX}/share/${pkg_name}"
+      rm -rf "${PREFIX}/share/${pkg_name}"
+      cleaned=true
+    fi
+
+    local remaining_lib_files
+    remaining_lib_files="$(find "${PREFIX}/lib" -name "lib${pkg_name}.so*" 2>/dev/null || true)"
+    if [[ -n "${remaining_lib_files}" ]]; then
+      echo "[build] Removing library files..."
+      echo "${remaining_lib_files}" | xargs rm -f 2>/dev/null || true
+      cleaned=true
+    fi
+
+    if [[ -d "${PREFIX}/lib/${pkg_name}" ]]; then
+      echo "[build] Removing library directory: ${PREFIX}/lib/${pkg_name}"
+      rm -rf "${PREFIX:?}/lib/${pkg_name}"
+      cleaned=true
+    fi
+
+    local remaining_ament_files
+    remaining_ament_files="$(find "${PREFIX}/share/ament_index" -name "${pkg_name}" -type f 2>/dev/null || true)"
+    if [[ -n "${remaining_ament_files}" ]]; then
+      echo "[build] Removing ament_index entries..."
+      echo "${remaining_ament_files}" | xargs rm -f 2>/dev/null || true
+      cleaned=true
+    fi
+
+    if [[ -f "${PREFIX}/share/colcon-core/packages/${pkg_name}" ]]; then
+      echo "[build] Removing colcon package registry entry..."
+      rm -f "${PREFIX}/share/colcon-core/packages/${pkg_name}"
+      cleaned=true
+    fi
+
     if [[ "${cleaned}" == false ]]; then
       echo "[build] No build or install files found for package: ${pkg_name}"
     else
@@ -517,6 +551,7 @@ Environment variables:
   STAGING_PREFIX      Full install prefix for development/build (default: ${OUTPUT_ROOT}/staging)
   ROOTFS_PREFIX       Runtime deploy prefix (default: ${OUTPUT_ROOT}/rootfs)
   PREFIX              Alias for STAGING_PREFIX (default: ${OUTPUT_ROOT}/staging)
+  OUTPUT_ROOT         Output root (default: ${REPO_ROOT}/output)
   PARALLEL_JOBS       Parallel build jobs (default: $(nproc))
   LOG_LEVEL           quiet|normal|verbose (default: quiet)
   LOG_ROOT            Log directory (default: ${OUTPUT_ROOT}/log)

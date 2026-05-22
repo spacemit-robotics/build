@@ -71,4 +71,4 @@ tests:
     python_env: *pytest_env
     command: |
       set -euo pipefail
-      python -m pytest build/tests -q -k 'docker_wrapper'
+      python -m pytest build/tests -q -k 'docker_wrapper or cross_build'

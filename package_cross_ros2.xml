@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>spacemit_robot_build_cross_ros2_deps</name>
+  <version>0.1.0</version>
+  <description>System dependency anchor for cross-building ROS2 packages in this repo.</description>
+
+  <maintainer email="maintainer@example.com">SpacemiT</maintainer>
+  <license>Apache-2.0</license>
+
+  <!-- Host-side colcon tools used by the Ubuntu cross-build container. -->
+  <system_depend arch="x86_64">colcon</system_depend>
+  <system_depend arch="x86_64">python3-colcon-cmake</system_depend>
+  <system_depend arch="x86_64">python3-colcon-ros</system_depend>
+  <system_depend arch="x86_64">python3-colcon-package-selection</system_depend>
+  <system_depend arch="x86_64">python3-setuptools</system_depend>
+  <system_depend arch="x86_64">python3-numpy</system_depend>
+  <system_depend arch="x86_64">python3-lark</system_depend>
+
+  <!-- Target-side ROS 2 libraries installed into the Bianbu sysroot. -->
+  <system_depend>ros-humble-ros-base</system_depend>
+  <system_depend>ros-humble-rosidl-default-generators</system_depend>
+  <system_depend>ros-humble-std-msgs</system_depend>
+
+  <export>
+    <!-- Dependency anchor only. -->
+  </export>
+</package>

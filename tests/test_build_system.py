@@ -43,7 +43,7 @@ def write_package(
     *,
     name: str | None = None,
     depends: list[str] | None = None,
-    sysdeps: list[tuple[str, str | None, str | None]] | None = None,
+    sysdeps: list[tuple[str, ...]] | None = None,
     build_type: str = "cmake",
     cmake: bool = False,
 ) -> None:
@@ -51,12 +51,16 @@ def write_package(
     sysdeps = sysdeps or []
     dep_xml = "\n".join(f"  <depend>{dep}</depend>" for dep in depends)
     sysdep_xml = []
-    for dep_name, check, arch in sysdeps:
+    for sysdep in sysdeps:
+        dep_name, check, arch = sysdep[:3]
+        cross_scope = sysdep[3] if len(sysdep) > 3 else None
         attrs = []
         if check:
             attrs.append(f'check="{check}"')
         if arch:
             attrs.append(f'arch="{arch}"')
+        if cross_scope:
+            attrs.append(f'cross_scope="{cross_scope}"')
         attr_text = (" " + " ".join(attrs)) if attrs else ""
         sysdep_xml.append(f"  <system_depend{attr_text}>{dep_name}</system_depend>")
     export_xml = f"  <export><build_type>{build_type}</build_type></export>" if build_type else ""
@@ -120,6 +124,24 @@ def make_fake_tools(tmp_path: Path) -> tuple[Path, Path]:
           done
         fi
         exit 0
+        """,
+        executable=True,
+    )
+    write_file(
+        fake_bin / "sudo",
+        """
+        #!/usr/bin/env bash
+        set -euo pipefail
+        args=()
+        for arg in "$@"; do
+          case "${arg}" in
+            -n|-E) continue ;;
+            --) continue ;;
+          esac
+          args+=("${arg}")
+        done
+        [[ ${#args[@]} -gt 0 ]] || exit 0
+        exec "${args[@]}"
         """,
         executable=True,
     )
@@ -527,6 +549,204 @@ def test_package_with_deps_detects_dependency_cycle(tmp_path: Path) -> None:
     assert "Dependency cycle detected" in result.stdout
 
 
+
+def write_cross_build_stub(sdk: Path) -> None:
+    write_file(
+        sdk / "build" / "cross_build.sh",
+        """
+        #!/usr/bin/env bash
+        set -euo pipefail
+        echo "cross_build $*" >> "${FAKE_TOOL_LOG}"
+        if [[ -n "${SROBOTIS_CMAKE_EXTRA_ARGS:-}" ]]; then
+          echo "cmake_extra ${SROBOTIS_CMAKE_EXTRA_ARGS}" >> "${FAKE_TOOL_LOG}"
+        fi
+        """,
+        executable=True,
+    )
+
+
+def test_envsetup_cross_build_routes_m_to_cross_build(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    fake_bin, fake_state = make_fake_tools(tmp_path)
+    write_cross_build_stub(sdk)
+    write_file(
+        sdk / "target" / "k3-cross-env.json",
+        """
+        {"version": "1.0", "board": "k3-com260", "enabled_packages": []}
+        """,
+    )
+
+    result = run_cmd(
+        sdk,
+        "source build/envsetup.sh >/dev/null; "
+        "lunch k3-cross-env >/dev/null; "
+        "m_enable_cross_build >/dev/null; "
+        "m -C",
+        fake_bin=fake_bin,
+        fake_state=fake_state,
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert "cross_build cmake" in read_log(fake_state)
+
+
+def test_envsetup_cross_build_routes_mm_to_cross_build(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    fake_bin, fake_state = make_fake_tools(tmp_path)
+    write_cross_build_stub(sdk)
+    write_package(sdk, "components/foo", name="foo", cmake=True)
+    write_file(
+        sdk / "target" / "k3-cross-env.json",
+        """
+        {"version": "1.0", "board": "k3-com260", "enabled_packages": ["components/foo"]}
+        """,
+    )
+
+    result = run_cmd(
+        sdk,
+        "source build/envsetup.sh >/dev/null; "
+        "lunch k3-cross-env >/dev/null; "
+        "m_enable_cross_build >/dev/null; "
+        "cd components/foo; mm --deps -DBUILD_TESTS=ON",
+        fake_bin=fake_bin,
+        fake_state=fake_state,
+    )
+
+    assert result.returncode == 0, result.stdout
+    log = read_log(fake_state)
+    assert "cross_build --log=verbose package " in log
+    assert f"{sdk}/components/foo --deps" in log
+    assert "cmake_extra -DBUILD_TESTS=ON" in log
+
+
+def test_cross_build_selects_k1_and_k3_images(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    write_file(
+        sdk / "target" / "k1-cross.json",
+        """
+        {"version": "1.0", "board": "k1", "enabled_packages": []}
+        """,
+    )
+    write_file(
+        sdk / "target" / "k3-cross.json",
+        """
+        {"version": "1.0", "board": "k3-com260", "enabled_packages": []}
+        """,
+    )
+
+    checks = [
+        ("k1-cross", "ubuntu:24.04", "bianbu:2.3"),
+        ("k3-cross", "ubuntu:26.04", "bianbu:4.0"),
+    ]
+    for target, ubuntu_image, bianbu_image in checks:
+        result = run_cmd(
+            sdk,
+            "SROBOTIS_CROSS_BUILD_SH_NO_MAIN=1 "
+            f"BUILD_TARGET={target} "
+            "bash -c \"source build/cross_build.sh; "
+            "load_build_config >/dev/null; select_cross_images; "
+            "printf \\\"%s %s\\\" \\\"\\$CROSS_UBUNTU_IMAGE\\\" \\\"\\$CROSS_BIANBU_IMAGE\\\"\"",
+        )
+
+        assert result.returncode == 0, result.stdout
+        assert result.stdout == f"{ubuntu_image} {bianbu_image}"
+
+
+def test_cross_build_routes_application_sysdeps_to_sysroot_unless_host_scoped(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    write_package(
+        sdk,
+        "application/native/app",
+        name="app",
+        sysdeps=[
+            ("target-lib", "dpkg -s target-lib", None),
+            ("host-tool", "command -v host-tool", None, "host"),
+            ("x86-tool", "command -v x86-tool", "x86_64"),
+            ("riscv-lib", "dpkg -s riscv-lib", "riscv64"),
+        ],
+        cmake=True,
+    )
+    write_file(
+        sdk / "target" / "k3-cross-deps.json",
+        """
+        {
+          "version": "1.0",
+          "board": "k3-com260",
+          "enabled_packages": ["application/native/app"]
+        }
+        """,
+    )
+
+    result = run_cmd(
+        sdk,
+        "SROBOTIS_CROSS_BUILD_SH_NO_MAIN=1 BUILD_TARGET=k3-cross-deps "
+        "bash -c \"source build/cross_build.sh; load_build_config >/dev/null; "
+        "split_cross_dependencies all; "
+        "printf \\\"HOST:%s\\n\\\" \\\"\\${HOST_DEP_LINES[*]}\\\"; "
+        "printf \\\"SYSROOT:%s\\n\\\" \\\"\\${SYSROOT_DEP_LINES[*]}\\\"\"",
+    )
+
+    assert result.returncode == 0, result.stdout
+    host_line = next(line for line in result.stdout.splitlines() if line.startswith("HOST:"))
+    sysroot_line = next(line for line in result.stdout.splitlines() if line.startswith("SYSROOT:"))
+    assert "host-tool" in host_line
+    assert "x86-tool" in host_line
+    assert "target-lib" not in host_line
+    assert "target-lib" in sysroot_line
+    assert "riscv-lib" in sysroot_line
+    assert "host-tool" not in sysroot_line
+
+
+def test_cross_build_merges_user_cmake_extra_args(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+
+    result = run_cmd(
+        sdk,
+        "SROBOTIS_CROSS_BUILD_SH_NO_MAIN=1 SROBOTIS_CMAKE_EXTRA_ARGS=-DBUILD_TESTS=ON "
+        "bash -c \"source build/cross_build.sh; "
+        "CROSS_TOOLCHAIN_FILE=/toolchain.cmake; "
+        "CROSS_PYTHON_INCLUDE_DIR=/sysroot/usr/include/python3.11; "
+        "CROSS_PYTHON_LIBRARY=/sysroot/usr/lib/libpython3.11.so; "
+        "CROSS_PYTHON_SOABI=cpython-311-riscv64-linux-gnu; "
+        "CROSS_STAGING_PREFIX=/staging; CROSS_SYSROOT=/sysroot; "
+        "cross_cmake_extra_args\"",
+    )
+
+    assert result.returncode == 0, result.stdout
+    lines = result.stdout.splitlines()
+    assert "-DCMAKE_TOOLCHAIN_FILE=/toolchain.cmake" in lines
+    assert "-DBUILD_TESTS=ON" in lines
+    assert lines.index("-DCMAKE_FIND_ROOT_PATH=/sysroot;/staging") < lines.index("-DBUILD_TESTS=ON")
+
+
+def test_cross_build_relocates_ros2_rootfs_paths(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    cross_root = sdk / "output" / "cross" / "k3-cross"
+    sysroot = cross_root / "sysroot"
+    staging = cross_root / "staging"
+    rootfs = cross_root / "rootfs"
+    write_file(
+        rootfs / "setup.sh",
+        f"prefix={staging}\nros={sysroot}/opt/ros/humble\n",
+    )
+    write_file(rootfs / "lib" / "libskip.so", f"prefix={staging}\n")
+
+    result = run_cmd(
+        sdk,
+        "SROBOTIS_CROSS_BUILD_SH_NO_MAIN=1 "
+        f"CROSS_SYSROOT={sysroot} CROSS_STAGING_PREFIX={staging} "
+        f"bash -c \"source build/cross_build.sh; relocate_cross_ros2_install {rootfs}\"",
+    )
+
+    assert result.returncode == 0, result.stdout
+    setup = (rootfs / "setup.sh").read_text(encoding="utf-8")
+    skipped = (rootfs / "lib" / "libskip.so").read_text(encoding="utf-8")
+    assert str(sysroot) not in setup
+    assert str(staging) not in setup
+    assert "/opt/ros/humble" in setup
+    assert str(rootfs) in setup
+    assert str(staging) in skipped
+
 def test_docker_wrapper_runs_deps_only_then_skip_deps_build(tmp_path: Path) -> None:
     sdk = make_sdk(tmp_path)
     fake_bin, fake_state = make_fake_tools(tmp_path)
@@ -589,6 +809,34 @@ def test_docker_wrapper_wraps_target_all_build(tmp_path: Path) -> None:
     assert "bianbu:4.0" in log
     assert "SROBOTIS_DEPS_ONLY=1" in log
     assert "SROBOTIS_SKIP_DEPS_CHECK=1" in log
+
+
+def test_docker_wrapper_passes_user_cmake_extra_args(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    fake_bin, fake_state = make_fake_tools(tmp_path)
+    write_package(sdk, "components/foo", name="foo", cmake=True)
+    write_file(
+        sdk / "target" / "k3-cmake-args.json",
+        """
+        {
+          "version": "1.0",
+          "board": "k3-com260",
+          "enabled_packages": ["components/foo"],
+          "options": {"auto_resolve_dependencies": true}
+        }
+        """,
+    )
+
+    result = run_cmd(
+        sdk,
+        "SROBOTIS_USE_DOCKER_BUILD=1 SROBOTIS_CMAKE_EXTRA_ARGS=-DBUILD_TESTS=ON "
+        "BUILD_TARGET=k3-cmake-args ./build/build.sh all",
+        fake_bin=fake_bin,
+        fake_state=fake_state,
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert "SROBOTIS_CMAKE_EXTRA_ARGS=-DBUILD_TESTS=ON" in read_log(fake_state)
 
 
 def test_docker_wrapper_selects_k1_bianbu_23_image(tmp_path: Path) -> None:
