@@ -4,7 +4,7 @@ module: build
 _pytest_env: &pytest_env
   python: python3
   install:
-    - pytest
+    - --prefer-binary pytest
 
 tests:
   - name: build-mm-flows
@@ -51,6 +51,39 @@ tests:
       set -euo pipefail
       python -m pytest build/tests -q -k "ros2_package_with_deps_uses_packages_up_to or ros2_package_build_selects_requested_package or ros2_package_with_deps_builds_transitive_sdk_underlay_first or ros2_package_deps_builds_only_ros2_dependencies"
 
+  - name: build-envsetup-flows
+    description: Verifies sourced envsetup helpers for lunch, m, mm, and clean flows.
+    category: functional
+    scopes: [pr, scheduled]
+    timeout_s: 300
+    workdir: sdk
+    python_env: *pytest_env
+    command: |
+      set -euo pipefail
+      python -m pytest build/tests -q -k "envsetup_lunch_m_and_mm_forward_user_commands or envsetup_m_clean_removes_all_outputs"
+
+  - name: build-python-wheel-flows
+    description: Verifies Python wheel build entry points from build.sh, envsetup helpers, and python_wheels.sh.
+    category: functional
+    scopes: [pr, scheduled]
+    timeout_s: 300
+    workdir: sdk
+    python_env: *pytest_env
+    command: |
+      set -euo pipefail
+      python -m pytest build/tests -q -k "envsetup_m_and_mm_py_build_python_wheels or python_wheels_script_builds_requested_package"
+
+  - name: build-failure-flows
+    description: Checks important user-facing build command failure paths and diagnostics.
+    category: functional
+    scopes: [pr, scheduled]
+    timeout_s: 300
+    workdir: sdk
+    python_env: *pytest_env
+    command: |
+      set -euo pipefail
+      python -m pytest build/tests -q -k "rejects_unexpected_package_argument or rejects_package_outside_repo or fails_when_ros_setup_missing or rejects_clean_with_deps"
+
   - name: build-clean-rootfs-flows
     description: Verifies clean commands and rootfs deployment cleanup behavior.
     category: functional
@@ -60,7 +93,7 @@ tests:
     python_env: *pytest_env
     command: |
       set -euo pipefail
-      python -m pytest build/tests -q -k "clean_all_removes_build_staging_and_rootfs or package_clean_removes_nonros2_package_build_dir or package_clean_removes_ros2_package_build_and_install_outputs or deploy_rootfs_strips_development_files"
+      python -m pytest build/tests -q -k "clean_all_removes_build_staging_and_rootfs or package_clean_removes_nonros2_package_build_dir or package_clean_removes_ros2_package_build_and_install_outputs or package_clean_removes_ros2_install_outputs_without_build_dir or deploy_rootfs_strips_development_files or deploy_rootfs_removes_stale_files_and_keeps_runtime_libs"
 
   - name: build-docker-flows
     description: Checks Docker wrapper command generation and target image selection behavior.

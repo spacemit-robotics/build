@@ -976,3 +976,306 @@ def test_ros2_package_deps_builds_only_ros2_dependencies(tmp_path: Path) -> None
     assert "colcon build" in log
     assert "--packages-select dep_node" in log
     assert "--packages-select demo_node" not in log
+
+
+def add_fake_python_build_tool(fake_bin: Path) -> None:
+    write_file(
+        fake_bin / "python3",
+        """
+        #!/usr/bin/env bash
+        set -euo pipefail
+        echo "python3 $*" >> "${FAKE_TOOL_LOG}"
+        if [[ "${1:-}" == "-c" ]]; then
+          exit 0
+        fi
+        if [[ "${1:-}" == "-m" && "${2:-}" == "build" ]]; then
+          out_dir=""
+          prev=""
+          for arg in "$@"; do
+            if [[ "${prev}" == "--outdir" ]]; then
+              out_dir="${arg}"
+            fi
+            prev="${arg}"
+          done
+          [[ -n "${out_dir}" ]] || { echo "missing --outdir" >&2; exit 2; }
+          mkdir -p "${out_dir}"
+          touch "${out_dir}/fake_pkg-0.1.0-py3-none-any.whl"
+          exit 0
+        fi
+        exec /usr/bin/python3 "$@"
+        """,
+        executable=True,
+    )
+
+
+def test_envsetup_lunch_m_and_mm_forward_user_commands(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    fake_bin, fake_state = make_fake_tools(tmp_path)
+    write_package(sdk, "components/foo", name="foo", cmake=True)
+    write_file(
+        sdk / "target" / "k3-env.json",
+        """
+        {
+          "version": "1.0",
+          "board": "k3-com260",
+          "product": "fixture",
+          "enabled_packages": ["components/foo"]
+        }
+        """,
+    )
+
+    result = run_cmd(
+        sdk,
+        """
+        set -euo pipefail
+        export SROBOTIS_SKIP_DEPS_CHECK=1
+        source build/envsetup.sh
+        lunch k3-env
+        m -C
+        (cd components/foo && mm --log=quiet -j3 -DDEMO=ON)
+        (cd components/foo && mm clean)
+        """,
+        fake_bin=fake_bin,
+        fake_state=fake_state,
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert "[lunch] Selected: k3-env" in result.stdout
+    log = read_log(fake_state)
+    assert logged_package_keys(log) == ["components/foo", "components/foo"]
+    assert "-DDEMO=ON" in log
+    assert not (sdk / "output" / "build" / "cmake" / "pkgs" / "components_foo").exists()
+
+
+def test_envsetup_m_clean_removes_all_outputs(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    write_file(sdk / "output" / "build" / "cmake" / "old", "old\n")
+    write_file(sdk / "output" / "staging" / "bin" / "old", "old\n")
+    write_file(sdk / "output" / "rootfs" / "bin" / "old", "old\n")
+
+    result = run_cmd(
+        sdk,
+        """
+        set -euo pipefail
+        source build/envsetup.sh >/dev/null
+        m clean
+        """,
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert not (sdk / "output" / "build").exists()
+    assert not (sdk / "output" / "staging").exists()
+    assert not (sdk / "output" / "rootfs").exists()
+
+
+def test_envsetup_m_and_mm_py_build_python_wheels(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    fake_bin, fake_state = make_fake_tools(tmp_path)
+    add_fake_python_build_tool(fake_bin)
+    (fake_state / "apt.db").write_text("pybind11-dev\n", encoding="utf-8")
+    write_package(sdk, "components/py_pkg", name="py_pkg", cmake=True)
+    write_file(sdk / "components" / "py_pkg" / "pyproject.toml", "[build-system]\nrequires = []\n")
+
+    result = run_cmd(
+        sdk,
+        """
+        set -euo pipefail
+        export SROBOTIS_SKIP_DEPS_CHECK=1
+        source build/envsetup.sh >/dev/null
+        m -C -py
+        (cd components/py_pkg && mm --log=quiet -py)
+        """,
+        fake_bin=fake_bin,
+        fake_state=fake_state,
+    )
+
+    assert result.returncode == 0, result.stdout
+    log = read_log(fake_state)
+    assert log.count("python3 -m build --wheel --outdir") >= 2
+    wheel_dir = sdk / "output" / "wheels" / "components_py_pkg"
+    assert list(wheel_dir.glob("*.whl"))
+
+
+def test_python_wheels_script_builds_requested_package(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    fake_bin, fake_state = make_fake_tools(tmp_path)
+    add_fake_python_build_tool(fake_bin)
+    (fake_state / "apt.db").write_text("pybind11-dev\n", encoding="utf-8")
+    write_package(sdk, "components/py_pkg", name="py_pkg", cmake=True)
+    write_file(sdk / "components" / "py_pkg" / "pyproject.toml", "[build-system]\nrequires = []\n")
+
+    result = run_cmd(
+        sdk,
+        "./build/python_wheels.sh components/py_pkg",
+        fake_bin=fake_bin,
+        fake_state=fake_state,
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert "[wheel] Package: components/py_pkg" in result.stdout
+    assert "[wheel] Done." in result.stdout
+    assert list((sdk / "output" / "wheels" / "components_py_pkg").glob("*.whl"))
+
+
+def test_docker_wrapper_adds_configured_devices(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    fake_bin, fake_state = make_fake_tools(tmp_path)
+    write_package(sdk, "components/foo", name="foo", cmake=True)
+    write_file(
+        sdk / "target" / "k3-device.json",
+        """
+        {
+          "version": "1.0",
+          "board": "k3-com260",
+          "enabled_packages": ["components/foo"]
+        }
+        """,
+    )
+
+    result = run_cmd(
+        sdk,
+        "SROBOTIS_USE_DOCKER_BUILD=1 SROBOTIS_DOCKER_DEVICES=/dev/null "
+        "BUILD_TARGET=k3-device ./build/build.sh package components/foo",
+        fake_bin=fake_bin,
+        fake_state=fake_state,
+    )
+
+    assert result.returncode == 0, result.stdout
+    log = read_log(fake_state)
+    assert "docker run -d" in log
+    assert "--device /dev/null" in log
+
+
+def test_docker_wrapper_rejects_non_dev_device_entries(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    fake_bin, fake_state = make_fake_tools(tmp_path)
+    write_package(sdk, "components/foo", name="foo", cmake=True)
+    write_file(
+        sdk / "target" / "k3-device-invalid.json",
+        """
+        {
+          "version": "1.0",
+          "board": "k3-com260",
+          "enabled_packages": ["components/foo"]
+        }
+        """,
+    )
+
+    result = run_cmd(
+        sdk,
+        "SROBOTIS_USE_DOCKER_BUILD=1 SROBOTIS_DOCKER_DEVICES=/tmp/not-dev "
+        "BUILD_TARGET=k3-device-invalid ./build/build.sh package components/foo",
+        fake_bin=fake_bin,
+        fake_state=fake_state,
+    )
+
+    assert result.returncode != 0
+    assert "SROBOTIS_DOCKER_DEVICES entries must start with /dev/" in result.stdout
+    assert "docker run -d" not in read_log(fake_state)
+
+
+def test_package_rejects_unexpected_package_argument(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    fake_bin, fake_state = make_fake_tools(tmp_path)
+    write_package(sdk, "components/foo", name="foo", cmake=True)
+
+    result = run_cmd(
+        sdk,
+        "./build/build.sh package components/foo build extra",
+        fake_bin=fake_bin,
+        fake_state=fake_state,
+    )
+
+    assert result.returncode != 0
+    assert "Unexpected package argument: extra" in result.stdout
+
+
+def test_package_rejects_package_outside_repo(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    fake_bin, fake_state = make_fake_tools(tmp_path)
+    outside = tmp_path / "outside_pkg"
+    write_file(outside / "CMakeLists.txt", "cmake_minimum_required(VERSION 3.10)\n")
+
+    result = run_cmd(
+        sdk,
+        f"SROBOTIS_SKIP_DEPS_CHECK=1 ./build/build.sh package {outside}",
+        fake_bin=fake_bin,
+        fake_state=fake_state,
+    )
+
+    assert result.returncode != 0
+    assert "Package directory must be inside repo" in result.stdout
+
+
+def test_ros2_package_fails_when_ros_setup_missing(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    fake_bin, fake_state = make_fake_tools(tmp_path)
+    write_package(sdk, "application/ros2/demo", name="demo_node", build_type="ament_cmake")
+
+    result = run_cmd(
+        sdk,
+        "SROBOTIS_SKIP_DEPS_CHECK=1 ROS_SETUP=/tmp/missing-ros-setup.bash "
+        "./build/build.sh package application/ros2/demo",
+        fake_bin=fake_bin,
+        fake_state=fake_state,
+    )
+
+    assert result.returncode != 0
+    assert "ROS setup script not found: /tmp/missing-ros-setup.bash" in result.stdout
+
+
+def test_envsetup_mm_rejects_clean_with_deps(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    write_package(sdk, "components/foo", name="foo", cmake=True)
+
+    result = run_cmd(
+        sdk,
+        """
+        source build/envsetup.sh >/dev/null
+        cd components/foo
+        mm --with-deps clean
+        """,
+    )
+
+    assert result.returncode != 0
+    assert "clean cannot be combined with --with-deps" in result.stdout
+
+
+def test_package_clean_removes_ros2_install_outputs_without_build_dir(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    write_package(sdk, "application/ros2/py_demo", name="py_node", build_type="ament_python")
+    write_file(sdk / "output" / "staging" / "share" / "py_node" / "old", "old\n")
+    write_file(sdk / "output" / "staging" / "lib" / "py_node" / "old", "old\n")
+    write_file(sdk / "output" / "staging" / "lib" / "libpy_node.so", "old\n")
+    write_file(
+        sdk / "output" / "staging" / "share" / "ament_index" / "resource_index" / "packages" / "py_node",
+        "old\n",
+    )
+    write_file(sdk / "output" / "staging" / "share" / "colcon-core" / "packages" / "py_node", "old\n")
+
+    result = run_cmd(sdk, "./build/build.sh package application/ros2/py_demo clean")
+
+    assert result.returncode == 0, result.stdout
+    assert not (sdk / "output" / "staging" / "share" / "py_node").exists()
+    assert not (sdk / "output" / "staging" / "lib" / "py_node").exists()
+    assert not (sdk / "output" / "staging" / "lib" / "libpy_node.so").exists()
+    assert not (
+        sdk / "output" / "staging" / "share" / "ament_index" / "resource_index" / "packages" / "py_node"
+    ).exists()
+    assert not (sdk / "output" / "staging" / "share" / "colcon-core" / "packages" / "py_node").exists()
+
+
+def test_deploy_rootfs_removes_stale_files_and_keeps_runtime_libs(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    staging = sdk / "output" / "staging"
+    rootfs = sdk / "output" / "rootfs"
+    write_file(staging / "bin" / "current", "current\n", executable=True)
+    write_file(staging / "lib" / "libruntime.so", "runtime\n")
+    write_file(rootfs / "bin" / "stale", "stale\n", executable=True)
+
+    result = run_cmd(sdk, "./build/build.sh deploy-rootfs")
+
+    assert result.returncode == 0, result.stdout
+    assert (rootfs / "bin" / "current").exists()
+    assert (rootfs / "lib" / "libruntime.so").exists()
+    assert not (rootfs / "bin" / "stale").exists()
