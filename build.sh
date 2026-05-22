@@ -40,9 +40,9 @@ source "${REPO_ROOT}/build/docker_build.sh"
 # Build single package (supports custom scripts)
 build_single_package() {
   local pkg_dir="$1"
-  
+
   [[ ! -d "${pkg_dir}" ]] && { echo "[build] ERROR: Package directory not found: ${pkg_dir}" >&2; exit 1; }
-  
+
   # Normalize to absolute path
   pkg_dir="$(cd "${pkg_dir}" && pwd)"
   if [[ "${pkg_dir}" != "${REPO_ROOT}/"* ]]; then
@@ -56,7 +56,7 @@ build_single_package() {
     build_one_nonros2_pkg "${pkg_key}" "${_want_python_wheels:-0}"
     return $?
   fi
-  
+
   # If package has package.xml, use <export><build_type> to decide ROS2 vs CMake.
   # ament_cmake/ament_python → ROS2 build; cmake or missing → fall through to CMake.
   if [[ -f "${pkg_dir}/package.xml" ]]; then
@@ -79,7 +79,7 @@ build_single_package() {
     fi
     # build_type is cmake or empty → treat as non-ROS2, fall through to CMake
   fi
-  
+
   # CMake package
   if [[ -f "${pkg_dir}/CMakeLists.txt" ]]; then
     # Packages under application/native need to build entire workspace
@@ -91,7 +91,7 @@ build_single_package() {
     fi
     return $?
   fi
-  
+
   echo "[build] ERROR: No valid package identifier found (CMakeLists.txt, package.xml, or build.sh)" >&2
   exit 1
 }
@@ -99,9 +99,9 @@ build_single_package() {
 # Clean single package
 clean_single_package() {
   local pkg_dir="$1"
-  
+
   [[ ! -d "${pkg_dir}" ]] && { echo "[build] ERROR: Package directory not found: ${pkg_dir}" >&2; exit 1; }
-  
+
   # ROS2 package cleanup (only for ament_cmake/ament_python; cmake build_type uses CMake path below)
   if [[ -f "${pkg_dir}/package.xml" ]]; then
     local build_type
@@ -109,15 +109,15 @@ clean_single_package() {
     if [[ "${build_type}" == "ament_cmake" || "${build_type}" == "ament_python" ]]; then
     local pkg_name
     pkg_name="$(get_ros2_package_name "${pkg_dir}")"
-    
+
     echo "[build] Cleaning ROS2 package: ${pkg_name}"
-    
+
     # Find build directory for this package
     local build_dir
     build_dir="$(find "${ROS2_BUILD_ROOT}" -type d -name "${pkg_name}" -maxdepth 2 2>/dev/null | head -n 1 || true)"
-    
+
     local cleaned=false
-    
+
     # Use CMake's uninstall target if available (most reliable method)
     if [[ -n "${build_dir}" && -d "${build_dir}" ]]; then
       echo "[build] Using CMake uninstall target for: ${pkg_name}"
@@ -125,76 +125,76 @@ clean_single_package() {
         echo "[build] Uninstalled files using CMake uninstall target"
         cleaned=true
       fi
-      
+
       # Clean build files using CMake clean target
       echo "[build] Cleaning build files using CMake clean target"
       if cmake --build "${build_dir}" --target clean >/dev/null 2>&1; then
         echo "[build] Build files cleaned successfully"
         cleaned=true
       else
-        # If cmake clean fails, remove build directory
-        echo "[build] Removing build directory: ${build_dir}"
-        rm -rf "${build_dir}"
-        cleaned=true
-      fi
-    else
-      # Build directory not found, try manual cleanup
-      local build_dirs
-      build_dirs="$(find "${ROS2_BUILD_ROOT}" -type d -name "${pkg_name}" 2>/dev/null || true)"
-      if [[ -n "${build_dirs}" ]]; then
-        echo "[build] Removing build directories..."
-        echo "${build_dirs}" | xargs rm -rf 2>/dev/null || true
-        cleaned=true
-      fi
-      
-      # Manual cleanup of install files (fallback)
-      if [[ -d "${PREFIX}/share/${pkg_name}" ]]; then
-        echo "[build] Removing install directory: ${PREFIX}/share/${pkg_name}"
-        rm -rf "${PREFIX}/share/${pkg_name}"
-        cleaned=true
-      fi
-      
-      local lib_files
-      lib_files="$(find "${PREFIX}/lib" -name "lib${pkg_name}.so*" 2>/dev/null || true)"
-      if [[ -n "${lib_files}" ]]; then
-        echo "[build] Removing library files..."
-        echo "${lib_files}" | xargs rm -f 2>/dev/null || true
-        cleaned=true
-      fi
-      
-      if [[ -d "${PREFIX}/lib/${pkg_name}" ]]; then
-        echo "[build] Removing library directory: ${PREFIX}/lib/${pkg_name}"
-        rm -rf "${PREFIX:?}/lib/${pkg_name}"
-        cleaned=true
-      fi
-      
-      # Clean ROS2 ament index entries
-      local ament_files
-      ament_files="$(find "${PREFIX}/share/ament_index" -name "${pkg_name}" -type f 2>/dev/null || true)"
-      if [[ -n "${ament_files}" ]]; then
-        echo "[build] Removing ament_index entries..."
-        echo "${ament_files}" | xargs rm -f 2>/dev/null || true
-        cleaned=true
-      fi
-      
-      # Clean colcon package registry
-      if [[ -f "${PREFIX}/share/colcon-core/packages/${pkg_name}" ]]; then
-        echo "[build] Removing colcon package registry entry..."
-        rm -f "${PREFIX}/share/colcon-core/packages/${pkg_name}"
-        cleaned=true
+        echo "[build] CMake clean target failed; falling back to manual cleanup"
       fi
     fi
-    
+
+    # Always remove build/install outputs that CMake clean/uninstall may leave behind.
+    local build_dirs
+    build_dirs="$(find "${ROS2_BUILD_ROOT}" -type d -name "${pkg_name}" 2>/dev/null || true)"
+    if [[ -n "${build_dirs}" ]]; then
+      echo "[build] Removing build directories..."
+      while IFS= read -r dir; do
+        [[ -n "${dir}" ]] && rm -rf "${dir}"
+      done <<< "${build_dirs}"
+      cleaned=true
+    fi
+
+    if [[ -d "${PREFIX}/share/${pkg_name}" ]]; then
+      echo "[build] Removing install directory: ${PREFIX}/share/${pkg_name}"
+      rm -rf "${PREFIX}/share/${pkg_name}"
+      cleaned=true
+    fi
+
+    local lib_files
+    lib_files="$(find "${PREFIX}/lib" -name "lib${pkg_name}.so*" 2>/dev/null || true)"
+    if [[ -n "${lib_files}" ]]; then
+      echo "[build] Removing library files..."
+      while IFS= read -r file; do
+        [[ -n "${file}" ]] && rm -f "${file}"
+      done <<< "${lib_files}"
+      cleaned=true
+    fi
+
+    if [[ -d "${PREFIX}/lib/${pkg_name}" ]]; then
+      echo "[build] Removing library directory: ${PREFIX}/lib/${pkg_name}"
+      rm -rf "${PREFIX:?}/lib/${pkg_name}"
+      cleaned=true
+    fi
+
+    local ament_files
+    ament_files="$(find "${PREFIX}/share/ament_index" -name "${pkg_name}" -type f 2>/dev/null || true)"
+    if [[ -n "${ament_files}" ]]; then
+      echo "[build] Removing ament_index entries..."
+      while IFS= read -r file; do
+        [[ -n "${file}" ]] && rm -f "${file}"
+      done <<< "${ament_files}"
+      cleaned=true
+    fi
+
+    if [[ -f "${PREFIX}/share/colcon-core/packages/${pkg_name}" ]]; then
+      echo "[build] Removing colcon package registry entry..."
+      rm -f "${PREFIX}/share/colcon-core/packages/${pkg_name}"
+      cleaned=true
+    fi
+
     if [[ "${cleaned}" == false ]]; then
       echo "[build] No build or install files found for package: ${pkg_name}"
     else
       echo "[build] Clean complete"
     fi
-    
+
     return 0
     fi
   fi
-  
+
   # CMake package cleanup (package.xml with build_type=cmake, or plain CMakeLists.txt)
   if [[ -f "${pkg_dir}/CMakeLists.txt" ]]; then
     local pkg_key="${pkg_dir#"${REPO_ROOT}"/}"
@@ -205,7 +205,7 @@ clean_single_package() {
         echo "[build] Clean complete"
     return 0
   fi
-  
+
   echo "[build] ERROR: No valid package identifier found" >&2
   exit 1
 }
@@ -216,7 +216,7 @@ clean_single_package() {
 
 clean_build() {
   local clean_type="${1:-all}"
-  
+
   case "${clean_type}" in
     cmake|C)
       echo "[build] Cleaning CMake build directories"
@@ -304,7 +304,7 @@ main() {
 
   local cmd="${1:-help}"
   shift || true
-  
+
   # Load build configuration if BUILD_TARGET is set
   load_build_config
 
@@ -382,22 +382,22 @@ main() {
       # After a full build, automatically generate the runtime rootfs prefix.
       deploy_rootfs
       ;;
-    
+
     cmake|C)
       build_nonros2_enabled_packages "${_want_python_wheels:-0}"
       ;;
-    
+
     ros2|R)
       build_ros2_middleware
       build_ros2_applications
       ;;
-    
+
     package|pkg)
       local pkg_dir="${1:-}"
       local action="${2:-build}"
       local extra_arg="${3:-}"
       local deps_mode="none"
-      
+
       [[ -z "${pkg_dir}" ]] && { echo "[build] ERROR: Package directory required" >&2; exit 1; }
       if [[ -n "${extra_arg}" ]]; then
         echo "[build] ERROR: Unexpected package argument: ${extra_arg}" >&2
@@ -425,7 +425,7 @@ main() {
           exit 1
           ;;
       esac
-      
+
       if [[ "${action}" == "clean" ]]; then
         if [[ "${deps_mode}" != "none" ]]; then
           echo "[build] ERROR: package clean cannot be combined with dependency build modes" >&2
@@ -484,7 +484,7 @@ main() {
         fi
       fi
       ;;
-    
+
     clean)
       clean_build "${1:-all}"
       ;;
@@ -492,7 +492,7 @@ main() {
     deploy-rootfs|rootfs)
       deploy_rootfs
       ;;
-    
+
     help|--help|-h)
       cat <<EOF
 Usage: build.sh <command> [args...]
@@ -554,7 +554,7 @@ Examples:
   ./build/build.sh --py cmake
 EOF
       ;;
-    
+
     *)
       echo "[build] ERROR: Unknown command: ${cmd}" >&2
       echo "Use 'build.sh help' for usage" >&2
