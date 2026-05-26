@@ -200,6 +200,15 @@ SROBOTIS_DOCKER_MAX_JOBS=0 ./build/build.sh all
 <system_depend check="pkg-config --exists yaml-cpp">libyaml-cpp-dev</system_depend>
 ```
 
+Cross 编译专用依赖可使用 `arch="cross"`，普通板端/Bianbu Docker 编译会忽略它们；再通过
+`cross_scope` 指定 cross 编译时安装到 Ubuntu host 容器还是 Bianbu sysroot 容器：
+
+```xml
+<system_depend arch="cross" cross_scope="host">python3-colcon-ros</system_depend>
+<system_depend arch="cross" cross_scope="sysroot">ros-humble-std-msgs</system_depend>
+<system_depend cross_scope="skip">ros-dev-tools</system_depend>
+```
+
 依赖检查失败时，构建系统会汇总缺失的 required 依赖，并提示安装；设置
 `AUTO_INSTALL_DEPS=yes` 或 `AUTO_INSTALL_DEPS=true` 时会直接执行依赖安装。以 root 运行时使用
 `apt install -y ...`，非 root 运行且存在 sudo 时使用 `sudo apt install -y ...`。

@@ -31,6 +31,10 @@ fi
 
 load_ros2_env() {
   if [[ ! -f "${ROS_SETUP}" ]]; then
+    if [[ "${SROBOTIS_CROSS_BUILD:-0}" == "1" ]]; then
+      echo "[build] ROS setup script not found on host, continuing in cross-build mode: ${ROS_SETUP}"
+      return 0
+    fi
     echo "[build] ERROR: ROS setup script not found: ${ROS_SETUP}" >&2
     exit 1
   fi
@@ -70,6 +74,12 @@ build_ros2_workspace() {
     --parallel-workers "${PARALLEL_JOBS}"
     --cmake-args -DCMAKE_PREFIX_PATH="${PREFIX}"
   )
+
+  if [[ -n "${SROBOTIS_CMAKE_EXTRA_ARGS:-}" ]]; then
+    while IFS= read -r line; do
+      [[ -n "${line}" ]] && colcon_args+=("${line}")
+    done <<< "${SROBOTIS_CMAKE_EXTRA_ARGS}"
+  fi
 
   if [[ ${#packages[@]} -gt 0 ]]; then
     case "${package_mode}" in
