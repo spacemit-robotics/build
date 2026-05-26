@@ -7,9 +7,22 @@
   <maintainer email="maintainer@example.com">SpacemiT</maintainer>
   <license>Apache-2.0</license>
 
-  <!-- Humble example: adjust if you build other distros. -->
-  <system_depend>ros-humble-ros-base</system_depend>
-  <system_depend>ros-dev-tools</system_depend>
+  <!-- Native board/Bianbu ROS2 dependencies. -->
+  <system_depend cross_scope="sysroot">ros-humble-ros-base</system_depend>
+  <system_depend cross_scope="skip">ros-dev-tools</system_depend>
+
+  <!-- Cross-only host-side tools used by the Ubuntu cross-build container. -->
+  <system_depend arch="cross" cross_scope="host">colcon</system_depend>
+  <system_depend arch="cross" cross_scope="host">python3-colcon-cmake</system_depend>
+  <system_depend arch="cross" cross_scope="host">python3-colcon-ros</system_depend>
+  <system_depend arch="cross" cross_scope="host">python3-colcon-package-selection</system_depend>
+  <system_depend arch="cross" cross_scope="host">python3-setuptools</system_depend>
+  <system_depend arch="cross" cross_scope="host">python3-numpy</system_depend>
+  <system_depend arch="cross" cross_scope="host">python3-lark</system_depend>
+
+  <!-- Cross-only target-side ROS2 libraries installed into the Bianbu sysroot. -->
+  <system_depend arch="cross" cross_scope="sysroot">ros-humble-rosidl-default-generators</system_depend>
+  <system_depend arch="cross" cross_scope="sysroot">ros-humble-std-msgs</system_depend>
 
   <export>
     <!-- Dependency anchor only. -->

@@ -8,7 +8,7 @@ set -euo pipefail
 
 # SDK root = one level above this script
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUTPUT_ROOT="${REPO_ROOT}/output"
+OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO_ROOT}/output}"
 
 # Prefix/layout defaults (can be overridden by env)
 CM_BUILD_ROOT="${OUTPUT_ROOT}/build/cmake"
@@ -517,6 +517,7 @@ Environment variables:
   STAGING_PREFIX      Full install prefix for development/build (default: ${OUTPUT_ROOT}/staging)
   ROOTFS_PREFIX       Runtime deploy prefix (default: ${OUTPUT_ROOT}/rootfs)
   PREFIX              Alias for STAGING_PREFIX (default: ${OUTPUT_ROOT}/staging)
+  OUTPUT_ROOT         Output root (default: ${REPO_ROOT}/output)
   PARALLEL_JOBS       Parallel build jobs (default: $(nproc))
   LOG_LEVEL           quiet|normal|verbose (default: quiet)
   LOG_ROOT            Log directory (default: ${OUTPUT_ROOT}/log)
