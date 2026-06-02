@@ -10,6 +10,9 @@
   <!-- Humble example: adjust if you build other distros. -->
   <system_depend>ros-humble-ros-base</system_depend>
   <system_depend>ros-dev-tools</system_depend>
+  <system_depend>ros-humble-robot-localization</system_depend>
+  <system_depend>ros-humble-joint-state-publisher</system_depend>
+  <system_depend>ros-humble-tf-transformations</system_depend>
 
   <export>
     <!-- Dependency anchor only. -->
