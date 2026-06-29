@@ -8,7 +8,7 @@ set -euo pipefail
 
 # SDK root = one level above this script
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUTPUT_ROOT="${REPO_ROOT}/output"
+OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO_ROOT}/output}"
 
 # Prefix/layout defaults (can be overridden by env)
 CM_BUILD_ROOT="${OUTPUT_ROOT}/build/cmake"
@@ -463,7 +463,9 @@ main() {
             while IFS= read -r sdk_dep; do
               [[ -n "${sdk_dep}" ]] || continue
               (
-                unset SROBOTIS_CMAKE_EXTRA_ARGS
+                if [[ "${SROBOTIS_CROSS_BUILD:-0}" != "1" ]]; then
+                  unset SROBOTIS_CMAKE_EXTRA_ARGS
+                fi
                 build_nonros2_package_deps "${sdk_dep}" 1 "${_want_python_wheels:-0}"
               )
             done < <(read_ros2_sdk_nonros2_deps "${pkg_key}")
@@ -474,7 +476,9 @@ main() {
             fi
           else
             (
-              unset SROBOTIS_CMAKE_EXTRA_ARGS
+              if [[ "${SROBOTIS_CROSS_BUILD:-0}" != "1" ]]; then
+                unset SROBOTIS_CMAKE_EXTRA_ARGS
+              fi
               build_nonros2_package_deps "${pkg_key}" 0 "${_want_python_wheels:-0}"
             )
           fi

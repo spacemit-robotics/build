@@ -63,6 +63,9 @@ export SROBOTIS_OUTPUT="${SROBOTIS_OUTPUT_STAGING}"
 # file intentionally disables it until m_enable_docker_build is run again.
 export SROBOTIS_USE_DOCKER_BUILD=0
 
+# Cross build is opt-in for each freshly sourced SDK shell. Re-sourcing this
+# file intentionally disables it until m_enable_cross_build is run again.
+export SROBOTIS_USE_CROSS_BUILD=0
 
 if [[ -n "${PREFIX-}" ]]; then
   case "${PREFIX}" in
@@ -178,6 +181,43 @@ EOF
     *)
       echo "[docker] ERROR: Unknown option: ${action}" >&2
       echo "Usage: m_enable_docker_build [disable]" >&2
+      return 1
+      ;;
+  esac
+}
+
+# Convenience function: enable or disable cross builds in the current shell.
+# Usage (after sourcing this file):
+#   m_enable_cross_build
+#   m_enable_cross_build disable
+m_enable_cross_build() {
+  local action="${1:-enable}"
+
+  if [[ $# -gt 1 ]]; then
+    echo "Usage: m_enable_cross_build [disable]" >&2
+    return 1
+  fi
+
+  case "${action}" in
+    enable|on|1|true|yes)
+      export SROBOTIS_USE_CROSS_BUILD=1
+      echo "[cross] Cross build enabled for this shell."
+      ;;
+    disable|off|0|false|no)
+      export SROBOTIS_USE_CROSS_BUILD=0
+      echo "[cross] Cross build disabled for this shell."
+      ;;
+    -h|--help)
+      cat <<EOF
+Usage: m_enable_cross_build [disable]
+
+Enable cross builds for this sourced SDK shell. m/mm route through
+build/cross_build.sh and require a k1/k3 target selected with lunch.
+EOF
+      ;;
+    *)
+      echo "[cross] ERROR: Unknown option: ${action}" >&2
+      echo "Usage: m_enable_cross_build [disable]" >&2
       return 1
       ;;
   esac
@@ -523,10 +563,14 @@ EOF
 
 # Helper function to run build.sh with environment variables
 _run_build() {
+  local build_script="./build/build.sh"
+  if [[ "${SROBOTIS_USE_CROSS_BUILD:-0}" == "1" ]]; then
+    build_script="./build/cross_build.sh"
+  fi
   PREFIX="${PREFIX}" ROS_DISTRO="${ROS_DISTRO}" ROS_SETUP="${ROS_SETUP}" \
     PARALLEL_JOBS="${PARALLEL_JOBS:-$(nproc)}" \
     BUILD_TARGET="${BUILD_TARGET:-}" BUILD_TARGET_FILE="${BUILD_TARGET_FILE:-}" \
-    ./build/build.sh "$@"
+    "${build_script}" "$@"
 }
 
 # Build command for repo root
@@ -767,6 +811,8 @@ srobot_help() {
   mm --with-deps / --deps      Build current package with deps, or only deps
   m_enable_docker_build        Enable Docker build for this sourced shell
   m_enable_docker_build disable  Disable Docker build for this sourced shell
+  m_enable_cross_build         Enable cross build for this sourced shell
+  m_enable_cross_build disable Disable cross build for this sourced shell
   venv <python_version>        Create and activate .venv for wheel builds via uv
   m_env_build <app_dir>        Build Python env from pyproject.toml
   m -py / mm -py               Opt-in: pass --py to build.sh for Python wheels after install
@@ -814,3 +860,4 @@ echo "[env] ROS_SETUP=${ROS_SETUP}"
 echo "[env] PATH now includes: ${PREFIX}/bin"
 echo "[env] LD_LIBRARY_PATH now includes: ${PREFIX}/lib"
 echo "[env] Docker build disabled; run m_enable_docker_build to enable it."
+echo "[env] Cross build disabled; run m_enable_cross_build to enable it."

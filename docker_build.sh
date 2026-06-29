@@ -322,11 +322,33 @@ configure_bianbu_docker_container() {
           set -euo pipefail
           src="/etc/apt/sources.list.d/bianbu.sources"
           [[ -f "${src}" ]] || exit 0
-          if grep -Eq "^[[:space:]]*Suites:.*(^|[[:space:]])noble-ros([[:space:]]|$)" "${src}"; then
-            exit 0
+          if grep -Eq "^[[:space:]]*Suites:.*(^|[[:space:]])bianbu-v2\.2-updates([[:space:]]|$)" "${src}"; then
+            echo "[docker] Replacing bianbu-v2.2-updates with bianbu-v2.3-updates in ${src}"
+            sed -i "/^[[:space:]]*Suites:/ s/bianbu-v2\.2-updates/bianbu-v2.3-updates/g" "${src}"
+          elif ! grep -Eq "^[[:space:]]*Suites:.*(^|[[:space:]])bianbu-v2\.3-updates([[:space:]]|$)" "${src}"; then
+            echo "[docker] Adding bianbu-v2.3-updates apt suite to ${src}"
+            sed -i "/^[[:space:]]*Suites:/ s/$/ bianbu-v2.3-updates/" "${src}"
           fi
-          echo "[docker] Adding noble-ros apt suite to ${src}"
-          sed -i "/^[[:space:]]*Suites:/ s/$/ noble-ros/" "${src}"
+          if ! grep -Eq "^[[:space:]]*Suites:.*(^|[[:space:]])noble-ros([[:space:]]|$)" "${src}"; then
+            echo "[docker] Adding noble-ros apt suite to ${src}"
+            sed -i "/^[[:space:]]*Suites:/ s/$/ noble-ros/" "${src}"
+          fi
+          pref="/etc/apt/preferences.d/bianbu"
+          mkdir -p "$(dirname "${pref}")"
+          touch "${pref}"
+          if grep -Eq "^[[:space:]]*Pin:.*n=bianbu-v2\.2-updates([[:space:]]|$)" "${pref}"; then
+            echo "[docker] Replacing bianbu-v2.2-updates apt pin with bianbu-v2.3-updates in ${pref}"
+            sed -i "s/n=bianbu-v2\.2-updates/n=bianbu-v2.3-updates/g" "${pref}"
+          fi
+          if ! grep -Eq "^[[:space:]]*Pin:.*n=bianbu-v2\.3-updates([[:space:]]|$)" "${pref}"; then
+            echo "[docker] Adding bianbu-v2.3-updates apt pin to ${pref}"
+            cat >> "${pref}" <<EOF
+
+Package: *
+Pin: release o=Spacemit, n=bianbu-v2.3-updates
+Pin-Priority: 1100
+EOF
+          fi
         '
       ;;
   esac
@@ -460,7 +482,7 @@ run_build_in_docker() {
 
   local env_name
   for env_name in \
-    BUILD_TARGET BUILD_TARGET_FILE BUILD_CONFIG_FILE \
+    BUILD_TARGET BUILD_TARGET_FILE BUILD_CONFIG_FILE OUTPUT_ROOT \
     STAGING_PREFIX ROOTFS_PREFIX PREFIX \
     ROS_DISTRO ROS_SETUP PARALLEL_JOBS \
     LOG_LEVEL LOG_ROOT LOG_TEE LOG_TAIL_LINES LOG_SHOW_ENTER LOG_SHOW_DONE \

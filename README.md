@@ -17,13 +17,14 @@
 | 输出布局   | `output/staging` 安装前缀，`output/rootfs` 部署目录（deploy-rootfs） |
 | 依赖       | 系统依赖检查与可选自动安装（apt），包级依赖解析                       |
 | Docker 构建 | 通过 `m_enable_docker_build` 或显式设置 `SROBOTIS_USE_DOCKER_BUILD=1` 后进入 Bianbu Docker 编译环境 |
+| 交叉编译   | 通过 `m_enable_cross_build` 或直接调用 `build/cross_build.sh`，在 x86_64 主机上生成 riscv64 目标产物 |
 | Python 环境 | `m_env_build`、`python_env_build.sh` 为应用构建虚拟环境          |
 | Python wheel | 可选：在 **non-ROS2** 包安装成功后，用 PEP 517 生成 `.whl` 到 `output/wheels/`（见下文） |
 
 | 类别       | 不支持 / 说明                                                       |
 | ---------- | -------------------------------------------------------------------- |
 | 其他构建系统 | 仅支持 CMake 与 ROS2 colcon，不负责其他语言/框架的构建               |
-| 交叉编译   | 默认走本地环境；Bianbu Docker 需通过 `m_enable_docker_build` 或 `SROBOTIS_USE_DOCKER_BUILD=1` 显式启用 |
+| 构建模式   | 默认走本地环境；Docker 构建和交叉编译均需在当前 shell 显式启用       |
 
 ## 用户场景与预期效果
 
@@ -55,6 +56,9 @@
 | B14 | 清理单个 non-ROS2 包 | `./build/build.sh package components/foo clean` | 只清理该包的 CMake build 目录，例如 `output/build/cmake/pkgs/components_foo`；不清理整个 staging，不影响其他包。 |
 | B15 | 清理单个 ROS2 包 | `./build/build.sh package application/ros2/demo clean` | 应清理该包 ROS2 build 目录和 install 输出，包括 `output/staging/share/<pkg>`、`output/staging/lib/<pkg>`、ament index、colcon registry 等。 |
 | B16 | 使用 Bianbu Docker 构建 | `SROBOTIS_USE_DOCKER_BUILD=1 BUILD_TARGET=k3-xxx ./build/build.sh all` | k1 target 使用 `bianbu:2.3`，k3 target 使用 `bianbu:4.0`；先以 root 检查/安装系统依赖，再用默认构建用户执行真实构建；外部命令语义与真机构建保持一致。 |
+| B17 | 使用交叉编译全量构建 | `lunch k3-xxx && m_enable_cross_build && m` | `m` 路由到 `build/cross_build.sh all`；在 Ubuntu host 容器中执行构建，在 Bianbu 容器中准备 riscv64 sysroot；产物输出到 `output/cross/<target>/`。 |
+| B18 | 使用交叉编译构建单包 | `lunch k3-xxx && m_enable_cross_build && cd components/foo && mm --with-deps` | `mm` 路由到 `build/cross_build.sh package <pkg>`；依赖语义与本地 `mm` 一致，但系统依赖会按 host / target sysroot 拆分。 |
+| B19 | 查看交叉编译依赖拆分 | `BUILD_TARGET=k3-xxx ./build/cross_build.sh deps all` | 只打印依赖，不编译；输出分为 `Host dependencies` 和 `Target sysroot dependencies`，用于确认哪些包安装到 Ubuntu host 容器、哪些包安装到 Bianbu sysroot。 |
 
 ### CI 调用场景
 
@@ -98,20 +102,39 @@ k1/k3 target 后，`m`、`mm` 和 `./build/build.sh all|cmake|ros2|package <dir>
 `m_enable_docker_build` 才会重新进入 Docker 编译。执行 `m_enable_docker_build disable` 可在当前 shell
 内关闭 Docker 编译。
 
+Docker 编译封装的目标是把普通 `build/build.sh` 放进匹配目标板的 Bianbu 容器里执行，外部入口仍然是
+`m`、`mm` 或 `./build/build.sh`。这不是交叉编译：编译器、系统依赖和 ROS2 环境都来自 Bianbu 容器，
+产物仍写回当前源码目录挂载的 `output/`。
+
+Docker 封装只包裹需要 target 上下文的构建命令：
+
+- `all`、`cmake` / `C`、`ros2` / `R`
+- `package <dir>` / `pkg <dir>`，但不包括 `package <dir> clean`
+- `clean`、`deploy-rootfs` 等命令不进入 Docker 包裹逻辑
+
 - k1 target 使用 `bianbu:2.3`，若本地没有则执行 `docker pull harbor.spacemit.com/bianbu/bianbu:2.3`
 - k3 target 使用 `bianbu:4.0`，若本地没有则执行 `docker pull harbor.spacemit.com/bianbu/bianbu:4.0`
 - 如果未安装 Docker，构建入口会提示先安装和配置 Docker 环境。
 - 默认以 `linux/riscv64` 平台启动 Bianbu 镜像。
 - Docker 容器会保留并复用：同一 SDK 路径和同一 bianbu 版本的容器已运行时直接 `docker exec`，
   已存在但停止时先 `docker start`，不存在时才创建。
+- 容器名默认由 SDK 路径 hash 和 Bianbu tag 组成，避免多个源码目录共用同一个容器；也可通过
+  `SROBOTIS_DOCKER_CONTAINER_NAME` 固定。
 - 新建容器默认只挂载当前 SDK 根目录到容器相同路径；默认容器名包含当前 SDK 路径标识，因此同一环境下
   不同 SDK 源码目录会使用不同 Docker 容器。
+- 如果容器已存在但没有挂载当前 `REPO_ROOT`，会删除并重建，避免复用到错误工作区。
 - 当 target 配置启用 `auto_resolve_dependencies` 时，会先以 root 在 Docker 内安装系统依赖；
   实际编译步骤默认使用宿主 uid/gid，避免 output 产物变成 root-owned。
+- 依赖自动安装分两步：先以 root 执行一次 `build.sh` 依赖检查/安装，随后真实构建设置
+  `SROBOTIS_SKIP_DEPS_CHECK=1`，避免重复检查。
 - 非 root Docker 编译会在容器内补齐宿主 uid/gid 对应的用户信息，并使用 `output/.docker_home`
   作为持久化 HOME。
 - 依赖安装后会默认把当前仓库的 `output/` 属主修正回宿主 uid/gid，避免历史 root-owned 文件阻塞后续编译。
 - Docker 构建中如果未显式指定 `-jN`，默认使用宿主 `nproc` 作为并行度，以加快编译。
+- k1 / Bianbu 2.3 容器会自动补齐 apt suite：将 `bianbu-v2.2-updates` 调整为
+  `bianbu-v2.3-updates`，并加入 `noble-ros`；同时设置对应 apt pin。
+- `SROBOTIS_DOCKER_DEVICES` 可把宿主 `/dev/*` 设备透传进容器，适合需要访问板卡设备或特殊节点的构建
+  / 测试流程；非 `/dev/` 路径会被拒绝。
 - Docker 封装逻辑在 `build/docker_build.sh`，`build/build.sh` 只保留入口判断；板端直接编译不会进入
   Docker 流程。
 
@@ -150,6 +173,125 @@ SROBOTIS_DOCKER_FIX_OUTPUT_OWNER=0 ./build/build.sh all
 
 # Docker 构建不自动使用最大线程，改回 target/环境中的 PARALLEL_JOBS
 SROBOTIS_DOCKER_MAX_JOBS=0 ./build/build.sh all
+```
+
+完整入口示例：
+
+```bash
+source build/envsetup.sh
+lunch k3-com260-minimal
+m_enable_docker_build
+
+m              # 在 Bianbu Docker 中构建全量 target
+m -C           # 在 Bianbu Docker 中只构建 CMake / non-ROS2 包
+m -R           # 在 Bianbu Docker 中只构建 ROS2 包
+
+cd components/peripherals/lidar
+mm --with-deps # 在 Bianbu Docker 中构建当前包及其依赖
+```
+
+### 交叉编译
+
+交叉编译用于在 x86_64 主机上构建 riscv64 目标产物，入口是 `build/cross_build.sh`。它和上面的
+“Bianbu Docker 编译”不是同一个模式：
+
+- Docker 编译：直接在 Bianbu riscv64 容器里运行普通 `build/build.sh`，更接近板端原生编译。
+- 交叉编译：使用 Ubuntu host 容器执行 CMake/colcon/Cargo 构建，使用 Bianbu 容器安装目标依赖并导出
+  riscv64 sysroot。
+
+推荐用法是在 `source build/envsetup.sh` 后显式启用交叉编译；重新 source 会重置为关闭：
+
+```bash
+source build/envsetup.sh
+lunch k3-com260-reachy-mini
+m_enable_cross_build
+
+m              # 交叉编译全量 target
+m -C           # 只交叉编译 non-ROS2 / CMake 包
+m -R           # 只交叉编译 ROS2 包
+m clean        # 清理 output/cross/<target>
+
+cd components/peripherals/motor
+mm --with-deps # 交叉编译当前包及其 SDK 依赖
+
+m_enable_cross_build disable
+```
+
+脚本或 CI 也可以直接调用 `cross_build.sh`，不依赖 shell 快捷函数：
+
+```bash
+BUILD_TARGET=k3-com260-reachy-mini ./build/cross_build.sh all
+BUILD_TARGET=k3-com260-reachy-mini ./build/cross_build.sh cmake
+BUILD_TARGET=k3-com260-reachy-mini ./build/cross_build.sh ros2
+BUILD_TARGET=k3-com260-reachy-mini ./build/cross_build.sh package components/peripherals/motor --with-deps
+BUILD_TARGET=k3-com260-reachy-mini ./build/cross_build.sh clean all
+```
+
+交叉编译要求已经选择 k1/k3 target。镜像按 target family 自动选择：
+
+| Target family | Ubuntu host 容器 | Bianbu sysroot 容器 |
+| ------------- | ---------------- | ------------------- |
+| k1            | `ubuntu:24.04`   | `bianbu:2.3`        |
+| k3            | `ubuntu:26.04`   | `bianbu:4.0`        |
+
+如果本地没有 `bianbu:<tag>`，交叉编译会优先拉取
+`harbor.spacemit.com/bianbu/bianbu:<tag>`，并尽量 tag 回 `bianbu:<tag>` 供后续复用。可通过
+`SROBOTIS_CROSS_BIANBU_IMAGE` 覆盖完整 Bianbu 镜像名。
+
+交叉编译流程：
+
+1. 读取 `target/*.json`，解析启用包和包选项。
+2. 创建或复用两个容器：`srobotis-cross-ubuntu-*` 与 `srobotis-cross-bianbu-*`。
+3. 收集系统依赖并按 `realm` 拆分：host 依赖安装到 Ubuntu 容器，target 依赖安装到 Bianbu 容器。
+4. 从 Bianbu 容器导出 sysroot 到 `output/cross/<target>/sysroot`。
+5. 生成 `toolchain-riscv64.cmake` 和 `meson-riscv64.ini`。
+6. 在 Ubuntu host 容器中运行普通 `build/build.sh`，同时注入交叉编译 CMake、pkg-config、Python、ROS2
+   和 Rust/Cargo 参数。
+
+输出布局：
+
+```text
+output/cross/<target>/
+  host/                    # host 侧工具前缀，供 CMAKE_PROGRAM_PATH 等查找
+  sysroot/                 # 从 Bianbu 容器导出的 riscv64 目标 sysroot
+  staging/                 # 交叉编译安装前缀
+  rootfs/                  # deploy-rootfs 生成的部署目录
+  toolchain-riscv64.cmake  # CMake toolchain file
+  meson-riscv64.ini        # Meson cross file
+  .cargo/                  # Cargo 缓存与配置目录
+```
+
+常用环境变量：
+
+| 变量 | 默认值 / 说明 |
+| ---- | ------------- |
+| `SROBOTIS_USE_CROSS_BUILD` | `m_enable_cross_build` 设置为 `1`；`source build/envsetup.sh` 会重置为 `0` |
+| `SROBOTIS_CROSS_OUTPUT_ROOT` | 覆盖 `output/cross/<target>` |
+| `SROBOTIS_CROSS_SYSROOT` | 覆盖目标 sysroot 目录 |
+| `SROBOTIS_CROSS_HOST_PREFIX` | 覆盖 host 工具前缀目录 |
+| `SROBOTIS_CROSS_BIANBU_TAG` | 覆盖 Bianbu tag，例如 `2.3` / `4.0` |
+| `SROBOTIS_CROSS_BIANBU_IMAGE` | 覆盖完整 Bianbu 镜像名 |
+| `SROBOTIS_CROSS_UBUNTU_IMAGE` | 覆盖完整 Ubuntu host 镜像名 |
+| `SROBOTIS_CROSS_BIANBU_PLATFORM` | Bianbu 容器平台，默认 `linux/riscv64` |
+| `SROBOTIS_CROSS_UBUNTU_PLATFORM` | Ubuntu host 容器平台，默认不强制指定 |
+| `SROBOTIS_CROSS_REFRESH_SYSROOT` | 设为 `1` 强制重新导出 sysroot |
+| `SROBOTIS_CROSS_SKIP_SYSROOT_SYNC` | 设为 `1` 且 sysroot 已存在时复用旧 sysroot |
+| `SROBOTIS_CROSS_FIX_OUTPUT_OWNER` | 设为 `0` 可禁用构建后修正 `output/cross` 属主 |
+| `SROBOTIS_CROSS_RUST_VERSION` | Rust 工具链版本，默认 `1.91` |
+| `SROBOTIS_CROSS_CARGO_EXECUTABLE` | 覆盖 host Cargo 路径，默认 `/usr/bin/cargo-${SROBOTIS_CROSS_RUST_VERSION}` |
+| `SROBOTIS_CROSS_RUSTC_EXECUTABLE` | 覆盖 host rustc 路径，默认 `/usr/bin/rustc-${SROBOTIS_CROSS_RUST_VERSION}` |
+
+辅助命令：
+
+```bash
+# 只看依赖拆分，不实际编译
+BUILD_TARGET=k3-com260-reachy-mini ./build/cross_build.sh deps all
+BUILD_TARGET=k3-com260-reachy-mini ./build/cross_build.sh deps package components/peripherals/motor
+
+# 从当前 cross rootfs/staging 扫描 ELF 动态库，反推板端运行时 apt 包
+BUILD_TARGET=k3-com260-reachy-mini ./build/cross_build.sh runtime-deps all
+BUILD_TARGET=k3-com260-reachy-mini ./build/cross_build.sh runtime-deps --strict all
+BUILD_TARGET=k3-com260-reachy-mini ./build/cross_build.sh runtime-deps --include-base all
 ```
 
 ## 依赖检查机制
@@ -204,6 +346,42 @@ SROBOTIS_DOCKER_MAX_JOBS=0 ./build/build.sh all
 `AUTO_INSTALL_DEPS=yes` 或 `AUTO_INSTALL_DEPS=true` 时会直接执行依赖安装。以 root 运行时使用
 `apt install -y ...`，非 root 运行且存在 sudo 时使用 `sudo apt install -y ...`。
 
+### 交叉编译依赖声明
+
+交叉编译会复用 `package.xml` 中的 `<system_depend>`，并额外识别 `when`、`realm`、`check_kind`、
+`check_arg`、`board`、`option_key` 和 `option_value` 等属性：
+
+```xml
+<!-- 只在交叉编译时安装到 Ubuntu host 容器 -->
+<system_depend when="cross" realm="host" check_kind="command" check_arg="meson">meson</system_depend>
+
+<!-- 只在交叉编译时安装到 Bianbu target sysroot -->
+<system_depend when="cross" realm="target" arch="riscv64">python3-dev</system_depend>
+
+<!-- 只在启用指定驱动时需要，且用文件存在性检查目标 sysroot 是否满足 -->
+<system_depend when="cross" realm="target" arch="riscv64"
+               check_kind="file"
+               check_arg="/usr/lib/rust-1.91/lib/rustlib/riscv64a23-unknown-linux-gnu/lib"
+               option_key="enabled_drivers"
+               option_value="drv_uart_xl330,uart_xl330">libstd-rust-1.91-dev</system_depend>
+```
+
+- `when="cross"` 表示只在交叉编译依赖收集时生效；`when="native"` / `when="docker"` 可用于排除交叉编译。
+- `realm="host"` 表示安装到 Ubuntu host 容器；`realm="target"` 表示安装到 Bianbu sysroot；
+  `realm="both"` 表示两边都需要；`realm="skip"` 表示交叉编译忽略该系统依赖。
+- 未指定 `realm` 时，`build/package.xml`、`build/package_cross.xml`、`build/package_ros2_cross.xml`
+  默认属于 host，普通组件包默认属于 target。
+- `check_kind` 支持 `dpkg`、`command`、`pkg-config`、`file`、`rustlib`；不写时默认按 dpkg 包检查。
+- `board="k1"` / `board="k3"` 可按目标板系列过滤；`arch` 仍按 realm 对应架构过滤。
+- `option_key` / `option_value` 可按 target 中的 `enabled_package_options` 过滤，例如只在启用某个驱动时
+  安装 Rust 工具链或板端库。
+
+交叉编译全局依赖由以下文件声明：
+
+- `build/package.xml`：普通构建基础依赖，也会进入交叉编译 host 依赖。
+- `build/package_cross.xml`：交叉编译专用全局依赖，例如 riscv64 gcc/g++、binutils、meson、ninja。
+- `build/package_ros2_cross.xml`：交叉编译 ROS2 包时才加入的 host/target 依赖。
+
 ## 如何编译
 
 ### 完整编译
@@ -252,6 +430,43 @@ BUILD_TARGET=k3-com260-minimal ./build/build.sh all
 ./build/build.sh clean all          # 清理全部
 ./build/build.sh clean cmake        # 仅清理 CMake
 ./build/build.sh deploy-rootfs      # 从 staging 生成 rootfs
+```
+
+### 交叉编译
+
+交叉编译的外部命令尽量保持与普通 `m` / `mm` 一致，只需要先启用 `m_enable_cross_build`：
+
+```bash
+source build/envsetup.sh
+lunch k3-com260-reachy-mini
+m_enable_cross_build
+
+m              # 等价于 ./build/cross_build.sh all
+m -C           # 等价于 ./build/cross_build.sh cmake
+m -R           # 等价于 ./build/cross_build.sh ros2
+m -j8          # 指定并行度
+m clean        # 清理 output/cross/<target>
+```
+
+单包交叉编译：
+
+```bash
+source build/envsetup.sh
+lunch k3-com260-reachy-mini
+m_enable_cross_build
+
+cd components/peripherals/motor
+mm
+mm --with-deps
+mm clean
+```
+
+直接脚本调用：
+
+```bash
+BUILD_TARGET=k3-com260-reachy-mini ./build/cross_build.sh all
+BUILD_TARGET=k3-com260-reachy-mini ./build/cross_build.sh package components/peripherals/motor --with-deps
+BUILD_TARGET=k3-com260-reachy-mini ./build/cross_build.sh runtime-deps all
 ```
 
 ### 单组件编译
@@ -355,7 +570,70 @@ ros2 run peripherals_lidar_node lidar_2d_node   # 示例：2D 雷达 ROS2 节点
 
 ## 常见问题
 
-待补充
+### source envsetup 后为什么没有自动进入 Docker 编译？
+
+`source build/envsetup.sh` 会显式把 `SROBOTIS_USE_DOCKER_BUILD` 重置为 `0`。这是为了避免复用 shell
+时误把本地构建放进 Docker。需要 Docker 编译时，每次 source 后重新执行：
+
+```bash
+m_enable_docker_build
+```
+
+### Docker 编译到底执行了几次 build.sh？
+
+当 target 配置启用了 `options.auto_resolve_dependencies=true`，或外部显式设置了
+`AUTO_INSTALL_DEPS=yes` / `true` 时，Docker 封装会先以 root 运行一次依赖检查/安装，并带上
+`SROBOTIS_DEPS_ONLY=1`；依赖安装完成后再以宿主 uid/gid 运行真实构建，并带上
+`SROBOTIS_SKIP_DEPS_CHECK=1`。这样既能安装 apt 依赖，又能避免最终产物变成 root-owned。
+
+如果未启用自动依赖安装，则直接进入真实构建，依赖缺失时由容器内的 `build.sh` 报错。
+
+### Docker 容器什么时候会复用，什么时候会重建？
+
+默认容器名包含 SDK 路径和 Bianbu 版本，所以同一路径、同一 target family 会复用容器。容器已停止时会
+`docker start` 后复用；容器存在但没有正确挂载当前 `REPO_ROOT` 时会删除并重建。
+
+需要强制使用固定容器名时可设置：
+
+```bash
+SROBOTIS_DOCKER_CONTAINER_NAME=srobotis-k3-build ./build/build.sh all
+```
+
+### source envsetup 后为什么没有自动进入交叉编译？
+
+`source build/envsetup.sh` 会显式把 `SROBOTIS_USE_CROSS_BUILD` 重置为 `0`。这是为了避免一个 shell
+复用到另一个 SDK 或 target 时误走交叉编译。需要交叉编译时，每次 source 后重新执行：
+
+```bash
+m_enable_cross_build
+```
+
+### 交叉编译和 Bianbu Docker 编译怎么选？
+
+- 想尽量模拟板端原生环境，优先用 `m_enable_docker_build`。
+- 想在 x86_64 主机上产出 riscv64 目标文件，并复用主机侧 CMake/colcon/Cargo 工具链，使用
+  `m_enable_cross_build`。
+
+两者都是显式开关，不会自动启用；同一个 shell 中不要同时启用两种模式。
+
+### 修改 target 依赖后为什么 sysroot 没变？
+
+交叉编译会根据 target 依赖指纹复用 `output/cross/<target>/sysroot`。如果需要强制重新导出：
+
+```bash
+SROBOTIS_CROSS_REFRESH_SYSROOT=1 BUILD_TARGET=k3-com260-reachy-mini ./build/cross_build.sh all
+```
+
+### 如何确认板端还需要安装哪些运行时包？
+
+先完成交叉编译和 rootfs 生成，再执行：
+
+```bash
+BUILD_TARGET=k3-com260-reachy-mini ./build/cross_build.sh runtime-deps all
+```
+
+输出中的 `Install command` 是根据当前 ELF 动态库依赖反推的板端 apt 安装命令；`Unresolved runtime libraries`
+非空时可加 `--strict` 让命令以失败退出。
 
 ## 版本与发布
 
