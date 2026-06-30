@@ -304,23 +304,233 @@ xml_arch_matches_current() {
   return 1
 }
 
+normalize_board_family() {
+  local board="$1"
+  case "${board}" in
+    k1*|K1*)
+      echo "k1"
+      ;;
+    k3*|K3*)
+      echo "k3"
+      ;;
+    *)
+      echo "${board}"
+      ;;
+  esac
+}
+
+target_board_family() {
+  local config_file="${BUILD_CONFIG_FILE:-}"
+  [[ -z "${config_file}" || ! -f "${config_file}" ]] && return 0
+  has_jq || return 0
+  normalize_board_family "$(jq -r '.board // ""' "${config_file}" 2>/dev/null || true)"
+}
+
+xml_board_matches_current() {
+  local board_filter="$1"
+  [[ -z "${board_filter}" ]] && return 0
+
+  local current_board
+  current_board="$(target_board_family)"
+  [[ -z "${current_board}" ]] && return 0
+
+  local item
+  board_filter="${board_filter//,/ }"
+  for item in ${board_filter}; do
+    [[ "$(normalize_board_family "${item}")" == "${current_board}" ]] && return 0
+  done
+
+  return 1
+}
+
+deps_when_matches_current() {
+  local when="${1:-all}"
+  case "${when:-all}" in
+    all)
+      return 0
+      ;;
+    native)
+      [[ "${SROBOTIS_IN_DOCKER_BUILD:-0}" != "1" && "${SROBOTIS_CROSS_BUILD:-0}" != "1" ]]
+      return $?
+      ;;
+    docker)
+      [[ "${SROBOTIS_IN_DOCKER_BUILD:-0}" == "1" ]]
+      return $?
+      ;;
+    cross)
+      [[ "${SROBOTIS_CROSS_BUILD:-0}" == "1" ]]
+      return $?
+      ;;
+    *)
+      echo "[deps] ERROR: Invalid when='${when}'" >&2
+      return 2
+      ;;
+  esac
+}
+
+deps_shell_quote() {
+  local quoted
+  printf -v quoted '%q' "$1"
+  printf '%s\n' "${quoted}"
+}
+
+deps_check_cmd_from_kind() {
+  local dep_name="$1"
+  local check_kind="${2:-}"
+  local check_arg="${3:-}"
+  local legacy_check="${4:-}"
+  local quoted
+
+  if [[ -n "${legacy_check}" && -z "${check_kind}" ]]; then
+    printf '%s\n' "${legacy_check}"
+    return 0
+  fi
+
+  case "${check_kind:-dpkg}" in
+    dpkg)
+      quoted="$(deps_shell_quote "${check_arg:-${dep_name}}")"
+      # shellcheck disable=SC2016
+      printf 'test "$(dpkg-query -W -f=\${Status} %s 2>/dev/null || true)" = "install ok installed"\n' "${quoted}"
+      ;;
+    command)
+      quoted="$(deps_shell_quote "${check_arg:-${dep_name}}")"
+      printf 'command -v %s\n' "${quoted}"
+      ;;
+    pkg-config)
+      quoted="$(deps_shell_quote "${check_arg:-${dep_name}}")"
+      printf 'pkg-config --exists %s\n' "${quoted}"
+      ;;
+    file)
+      quoted="$(deps_shell_quote "${check_arg}")"
+      printf 'test -e %s\n' "${quoted}"
+      ;;
+    rustlib)
+      quoted="$(deps_shell_quote "${check_arg:-riscv64*-unknown-linux-gnu}")"
+      printf 'find /usr/lib -path "*/rustlib/%s/lib/libcore-*.rlib" -print -quit | grep -q .\n' "${quoted}"
+      ;;
+    *)
+      echo "[deps] ERROR: Invalid check_kind='${check_kind}' for ${dep_name}" >&2
+      return 1
+      ;;
+  esac
+}
+
+deps_required_type_from_line() {
+  local line="$1"
+  local required
+  required="$(xml_line_attr "${line}" "required")"
+  case "${required:-required}" in
+    required|true|yes|1)
+      echo "required"
+      ;;
+    optional|false|no|0)
+      echo "optional"
+      ;;
+    *)
+      echo "[deps] ERROR: Invalid required='${required}'" >&2
+      return 1
+      ;;
+  esac
+}
+
+deps_validate_system_depend_metadata() {
+  local dep_name="$1"
+  local arch_filter="$2"
+  local realm="$3"
+  local when="$4"
+  local check_kind="$5"
+
+  if [[ "${arch_filter}" == "cross" ]]; then
+    echo "[deps] ERROR: arch='cross' is not allowed for ${dep_name}; use when='cross' instead" >&2
+    return 1
+  fi
+
+  case "${realm:-}" in
+    ""|host|target|both|skip)
+      ;;
+    *)
+      echo "[deps] ERROR: Invalid realm='${realm}' for ${dep_name}" >&2
+      return 1
+      ;;
+  esac
+
+  case "${when:-all}" in
+    all|native|docker|cross)
+      ;;
+    *)
+      echo "[deps] ERROR: Invalid when='${when}' for ${dep_name}" >&2
+      return 1
+      ;;
+  esac
+
+  case "${check_kind:-}" in
+    ""|dpkg|command|pkg-config|file|rustlib)
+      ;;
+    *)
+      echo "[deps] ERROR: Invalid check_kind='${check_kind}' for ${dep_name}" >&2
+      return 1
+      ;;
+  esac
+}
+
+deps_option_matches_current() {
+  local pkg_key="$1"
+  local option_key="${2:-}"
+  local option_value="${3:-}"
+  [[ -z "${option_key}" ]] && return 0
+  [[ -z "${pkg_key}" ]] && return 0
+
+  local config_file="${BUILD_CONFIG_FILE:-}"
+  if [[ -z "${config_file}" || ! -f "${config_file}" ]] || ! has_jq; then
+    return 0
+  fi
+
+  local selected=()
+  local item wanted
+  mapfile -t selected < <(get_target_option_list "${pkg_key}" ".${option_key}[]? // empty")
+  [[ ${#selected[@]} -eq 0 ]] && return 1
+
+  option_value="${option_value//,/ }"
+  option_value="${option_value//;/ }"
+  for item in "${selected[@]}"; do
+    for wanted in ${option_value}; do
+      [[ "${item}" == "${wanted}" ]] && return 0
+    done
+  done
+  return 1
+}
+
 # Read <system_depend> from package.xml. Output lines: required|dep_name|check_cmd
-# Default check_cmd is "dpkg -s <dep_name>". Optional attribute check="..." overrides it.
+# Default check_cmd verifies dpkg status is "install ok installed". Optional attribute check="..." overrides it.
 # Optional attribute arch="..." limits the dependency to matching SDK_BUILD_ARCH/uname -m.
 read_sysdeps_lines_from_xml_file() {
   local pkg_xml="$1"
+  local pkg_key="${2:-}"
   [[ -f "${pkg_xml}" ]] || return 0
   while IFS= read -r line; do
     [[ -z "${line}" ]] && continue
-    local name check_cmd arch_filter
+    local name check_cmd arch_filter board_filter realm when check_kind check_arg option_key option_value dep_type
     # Extract name from PCDATA before </system_depend> (avoid matching ">" inside check="...2>/dev/null...")
     name="$(echo "${line}" | sed -n 's/.*> *\([^<]*\) *<\/system_depend>.*/\1/p' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     check_cmd="$(xml_line_attr "${line}" "check")"
     arch_filter="$(xml_line_attr "${line}" "arch")"
+    board_filter="$(xml_line_attr "${line}" "board")"
+    realm="$(xml_line_attr "${line}" "realm")"
+    when="$(xml_line_attr "${line}" "when")"
+    check_kind="$(xml_line_attr "${line}" "check_kind")"
+    check_arg="$(xml_line_attr "${line}" "check_arg")"
+    option_key="$(xml_line_attr "${line}" "option_key")"
+    option_value="$(xml_line_attr "${line}" "option_value")"
     [[ -z "${name}" ]] && continue
+    deps_validate_system_depend_metadata "${name}" "${arch_filter}" "${realm}" "${when}" "${check_kind}" || return 1
+    [[ "${realm}" == "skip" ]] && continue
+    deps_when_matches_current "${when:-all}" || continue
     xml_arch_matches_current "${arch_filter}" || continue
-    [[ -z "${check_cmd}" ]] && check_cmd="dpkg -s ${name}"
-    echo "required|${name}|${check_cmd}"
+    xml_board_matches_current "${board_filter}" || continue
+    deps_option_matches_current "${pkg_key}" "${option_key}" "${option_value}" || continue
+    dep_type="$(deps_required_type_from_line "${line}")" || return 1
+    check_cmd="$(deps_check_cmd_from_kind "${name}" "${check_kind}" "${check_arg}" "${check_cmd}")" || return 1
+    echo "${dep_type}|${name}|${check_cmd}"
   done < <(grep -E '<system_depend' "${pkg_xml}" 2>/dev/null)
 }
 
@@ -328,7 +538,7 @@ read_package_xml_sysdeps_lines() {
   local pkg_key="$1"
   local pkg_xml
   pkg_xml="$(package_xml_path "${pkg_key}")"
-  read_sysdeps_lines_from_xml_file "${pkg_xml}"
+  read_sysdeps_lines_from_xml_file "${pkg_xml}" "${pkg_key}"
 }
 
 # Read dependencies for a package key:
@@ -711,6 +921,32 @@ install_system_dependencies() {
   if [[ "${SROBOTIS_IN_DOCKER_BUILD:-0}" == "1" || "${APT_UPDATE_BEFORE_INSTALL:-0}" == "1" ]]; then
     if ! refresh_apt_package_index; then
       echo "[deps] ERROR: Failed to refresh apt package index" >&2
+      return 1
+    fi
+  fi
+
+  local legacy_onnxruntime_status=""
+  local spacemit_onnxruntime_status=""
+  if [[ " ${deps_array[*]} " == *" spacemit-onnxruntime "* ]]; then
+    legacy_onnxruntime_status="$(dpkg-query -W -f='${Status}' onnxruntime 2>/dev/null || true)"
+    spacemit_onnxruntime_status="$(dpkg-query -W -f='${Status}' spacemit-onnxruntime 2>/dev/null || true)"
+  fi
+  if [[ " ${deps_array[*]} " == *" spacemit-onnxruntime "* ]] &&
+     [[ -n "${legacy_onnxruntime_status}" && "${legacy_onnxruntime_status}" != "install ok not-installed" ]] &&
+     [[ "${spacemit_onnxruntime_status}" != "install ok installed" ]]; then
+    local remove_cmd=()
+    local remove_cmd_text
+    if [[ "$(id -u)" -eq 0 ]]; then
+      remove_cmd=("${apt_bin}" "remove" "-y" "onnxruntime")
+      remove_cmd_text="${apt_bin} remove -y onnxruntime"
+    else
+      remove_cmd=("sudo" "${apt_bin}" "remove" "-y" "onnxruntime")
+      remove_cmd_text="sudo ${apt_bin} remove -y onnxruntime"
+    fi
+    echo "[deps] Removing conflicting legacy package before installing spacemit-onnxruntime: onnxruntime"
+    echo "[deps] Running: ${remove_cmd_text}"
+    if ! DEBIAN_FRONTEND=noninteractive "${remove_cmd[@]}"; then
+      echo "[deps] ERROR: Failed to remove conflicting package: onnxruntime" >&2
       return 1
     fi
   fi
