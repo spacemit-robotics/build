@@ -24,7 +24,7 @@ ROS_SETUP="${ROS_SETUP:-/opt/ros/${ROS_DISTRO}/setup.bash}"
 
 PARALLEL_JOBS="${PARALLEL_JOBS:-$(nproc)}"
 
-BUILD_TARGET="${BUILD_TARGET:-}"
+BUILD_TARGET="${BUILD_TARGET:-${CI_BUILD_TARGET:-}}"
 BUILD_TARGET_FILE="${BUILD_TARGET_FILE:-}"
 
 # Load modular implementations

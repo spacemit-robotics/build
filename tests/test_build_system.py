@@ -2369,6 +2369,39 @@ def test_target_with_deps_installs_dependency_system_deps(tmp_path: Path) -> Non
     assert "Dependency-only check complete" in result.stdout
 
 
+def test_ci_build_target_is_used_for_package_context(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    fake_bin, fake_state = make_fake_tools(tmp_path)
+    write_package(sdk, "components/peripherals/motor", name="motor", cmake=True)
+    write_file(
+        sdk / "target" / "k3-ci-target.json",
+        """
+        {
+          "version": "1.0",
+          "board": "k3-com260",
+          "enabled_packages": ["components/peripherals/motor"],
+          "enabled_package_options": {
+            "components/peripherals/motor": {
+              "enabled_drivers": ["left", "right"]
+            }
+          }
+        }
+        """,
+    )
+
+    result = run_cmd(
+        sdk,
+        "SROBOTIS_SKIP_DEPS_CHECK=1 CI_BUILD_TARGET=k3-ci-target "
+        "./build/build.sh package components/peripherals/motor",
+        fake_bin=fake_bin,
+        fake_state=fake_state,
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert "[build] Using configuration:" in result.stdout
+    assert "-DSROBOTIS_PERIPHERALS_MOTOR_ENABLED_DRIVERS=left;right" in read_log(fake_state)
+
+
 def test_target_package_options_are_passed_to_peripheral_cmake(tmp_path: Path) -> None:
     sdk = make_sdk(tmp_path)
     fake_bin, fake_state = make_fake_tools(tmp_path)
