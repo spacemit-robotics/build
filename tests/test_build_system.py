@@ -1645,7 +1645,7 @@ def test_cross_cmake_args_use_versioned_rust_tools(tmp_path: Path) -> None:
     assert "-Wl,--allow-shlib-undefined" in result.stdout
 
 
-def test_cross_cmake_args_disable_non_cpp_rosidl_generators(tmp_path: Path) -> None:
+def test_cross_cmake_args_enable_python_rosidl_generator_by_default(tmp_path: Path) -> None:
     sdk = make_sdk(tmp_path)
     sysroot = sdk / "output" / "cross" / "k3-rosidl" / "sysroot"
     (sysroot / "usr" / "include" / "python3.14").mkdir(parents=True)
@@ -1657,8 +1657,103 @@ def test_cross_cmake_args_disable_non_cpp_rosidl_generators(tmp_path: Path) -> N
     )
 
     assert result.returncode == 0, result.stdout
+    assert "-DCMAKE_DISABLE_FIND_PACKAGE_rosidl_generator_py=TRUE" not in result.stdout
+    assert "-DCMAKE_DISABLE_FIND_PACKAGE_rosidl_generator_rs=TRUE" in result.stdout
+
+
+def test_cross_cmake_args_can_disable_python_rosidl_generator(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    sysroot = sdk / "output" / "cross" / "k3-no-rosidl-py" / "sysroot"
+    (sysroot / "usr" / "include" / "python3.14").mkdir(parents=True)
+
+    result = run_cmd(
+        sdk,
+        "SROBOTIS_CROSS_BUILD_SH_NO_MAIN=1 BUILD_TARGET=k3-no-rosidl-py "
+        "SROBOTIS_CROSS_DISABLE_ROSIDL_GENERATOR_PY=1 "
+        "bash -lc 'source ./build/cross_build.sh; init_cross_paths; cross_cmake_extra_args'",
+    )
+
+    assert result.returncode == 0, result.stdout
     assert "-DCMAKE_DISABLE_FIND_PACKAGE_rosidl_generator_py=TRUE" in result.stdout
     assert "-DCMAKE_DISABLE_FIND_PACKAGE_rosidl_generator_rs=TRUE" in result.stdout
+
+
+def test_cross_cmake_args_pass_target_numpy_include_for_python_rosidl(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    sysroot = sdk / "output" / "cross" / "k3-numpy-include" / "sysroot"
+    py_include = sysroot / "usr" / "include" / "python3.14"
+    numpy_include = sysroot / "usr" / "lib" / "python3" / "dist-packages" / "numpy" / "core" / "include"
+    py_include.mkdir(parents=True)
+    write_file(numpy_include / "numpy" / "numpyconfig.h", "/* fixture */\n")
+
+    result = run_cmd(
+        sdk,
+        "SROBOTIS_CROSS_BUILD_SH_NO_MAIN=1 BUILD_TARGET=k3-numpy-include "
+        "bash -lc 'source ./build/cross_build.sh; init_cross_paths; cross_cmake_extra_args'",
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert f"-DPython3_NumPy_INCLUDE_DIR={numpy_include}" in result.stdout
+    assert f"-DPython3_NumPy_INCLUDE_DIRS={numpy_include}" in result.stdout
+    assert f"-DPYTHON_INCLUDE_DIRS={py_include};{numpy_include}" in result.stdout
+    assert f"-DPythonExtra_INCLUDE_DIRS={py_include};{numpy_include}" in result.stdout
+
+    init_file = sdk / "output" / "cross" / "k3-numpy-include" / "cross-python-init.cmake"
+    init_result = run_cmd(
+        sdk,
+        "SROBOTIS_CROSS_BUILD_SH_NO_MAIN=1 BUILD_TARGET=k3-numpy-include "
+        "bash -lc 'source ./build/cross_build.sh; init_cross_paths; "
+        "write_cross_python_cmake_init'",
+    )
+    assert init_result.returncode == 0, init_result.stdout
+    init_text = init_file.read_text(encoding="utf-8")
+    assert "if(CMAKE_CROSSCOMPILING AND EXISTS" in init_text
+    assert f'set(_numpy_h "{numpy_include}/numpy/numpyconfig.h" CACHE FILEPATH "" FORCE)' in init_text
+    assert f'include_directories(BEFORE SYSTEM "{numpy_include}")' in init_text
+    assert "endif()" in init_text
+    assert f"-DCMAKE_PROJECT_INCLUDE={init_file}" not in result.stdout
+    ros_result = run_cmd(
+        sdk,
+        "SROBOTIS_CROSS_BUILD_SH_NO_MAIN=1 BUILD_TARGET=k3-numpy-include "
+        "bash -lc 'source ./build/cross_build.sh; init_cross_paths; "
+        "cross_ros2_cmake_extra_args'",
+    )
+    assert ros_result.returncode == 0, ros_result.stdout
+    assert f"-DCMAKE_PROJECT_INCLUDE={init_file}" in ros_result.stdout
+
+
+def test_cross_cmake_args_pass_target_python_soabi(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    sysroot = sdk / "output" / "cross" / "k3-soabi" / "sysroot"
+    py_include = sysroot / "usr" / "include" / "python3.14"
+    py_include.mkdir(parents=True)
+    write_file(
+        sysroot / "usr" / "lib" / "python3" / "dist-packages" / "fake_ext.cpython-314-riscv64-linux-gnu.so",
+        "fixture\n",
+    )
+
+    result = run_cmd(
+        sdk,
+        "SROBOTIS_CROSS_BUILD_SH_NO_MAIN=1 BUILD_TARGET=k3-soabi "
+        "bash -lc 'source ./build/cross_build.sh; init_cross_paths; cross_cmake_extra_args'",
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert "-DPython3_SOABI=cpython-314-riscv64-linux-gnu" in result.stdout
+    assert "-DPYTHON_SOABI=cpython-314-riscv64-linux-gnu" in result.stdout
+
+
+def test_cross_ros2_global_deps_include_python_message_runtime(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    write_package(sdk, "middleware/ros2/demo_msgs", name="demo_msgs", build_type="ament_cmake")
+
+    result = run_cmd(sdk, "./build/cross_build.sh deps package middleware/ros2/demo_msgs")
+
+    assert result.returncode == 0, result.stdout
+    target = cross_deps_section(result.stdout, "[cross] Target sysroot dependencies:")
+    assert "python3-numpy" in target
+    assert "ros-humble-rosidl-generator-py" in target
+    assert "ros-humble-rosidl-runtime-py" in target
 
 
 def test_cross_cmake_args_disable_build_testing(tmp_path: Path) -> None:
@@ -2047,8 +2142,12 @@ def test_cross_build_passes_sysroot_pythonpath_to_ubuntu_build(tmp_path: Path) -
     fake_state.mkdir()
     log = fake_state / "tools.log"
     sysroot = sdk / "output" / "cross" / "k3-py" / "sysroot"
+    (sysroot / "usr" / "include" / "python3.14").mkdir(parents=True)
     (sysroot / "usr" / "lib" / "python3" / "dist-packages").mkdir(parents=True)
-    (sysroot / "opt" / "ros" / "humble" / "lib" / "python3.14" / "site-packages").mkdir(parents=True)
+    ros_py314 = sysroot / "opt" / "ros" / "humble" / "lib" / "python3.14" / "site-packages"
+    ros_py314.mkdir(parents=True)
+    write_file(ros_py314 / "em.py", "# compatible ROS vendor Empy fixture\n")
+    (sysroot / "opt" / "ros" / "humble" / "lib" / "python3.13" / "site-packages").mkdir(parents=True)
     (sysroot / "opt" / "ros" / "humble" / "lib" / "python3" / "dist-packages").mkdir(parents=True)
     write_file(
         fake_bin / "docker",
@@ -2074,11 +2173,89 @@ def test_cross_build_passes_sysroot_pythonpath_to_ubuntu_build(tmp_path: Path) -
     docker_log = log.read_text(encoding="utf-8")
     staging = sdk / "output" / "cross" / "k3-py" / "staging"
     assert " -e PYTHONPATH=" in docker_log
+    assert "/usr/local/lib/python3/dist-packages" in docker_log
+    assert docker_log.index(
+        f"{sysroot}/opt/ros/humble/lib/python3.14/site-packages"
+    ) < docker_log.index("/usr/lib/python3/dist-packages")
+    assert docker_log.index("/usr/lib/python3/dist-packages") < docker_log.index(
+        f"{sysroot}/opt/ros/humble/lib/python3.13/site-packages"
+    )
+    assert docker_log.index("/usr/lib/python3/dist-packages") < docker_log.index(
+        f"{sysroot}/opt/ros/humble/lib/python3/dist-packages"
+    )
+    assert docker_log.index("/usr/lib/python3/dist-packages") < docker_log.index(
+        f"{sysroot}/usr/lib/python3/dist-packages"
+    )
     assert f"{sysroot}/usr/lib/python3/dist-packages" in docker_log
     assert f"{sysroot}/opt/ros/humble/lib/python3.14/site-packages" in docker_log
     assert f"{sysroot}/opt/ros/humble/lib/python3/dist-packages" in docker_log
     assert f"-e AMENT_PREFIX_PATH={staging}:{sysroot}/usr:{sysroot}/opt/ros/humble" in docker_log
     assert f"-e CMAKE_PREFIX_PATH={staging}:{sysroot}/usr:{sysroot}/opt/ros/humble" in docker_log
+
+
+def test_cross_pythonpath_keeps_k1_ros_dir_without_empy_after_host(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    sysroot = sdk / "output" / "cross" / "k1-py" / "sysroot"
+    (sysroot / "usr" / "include" / "python3.12").mkdir(parents=True)
+    ros_py312 = sysroot / "opt" / "ros" / "humble" / "lib" / "python3.12" / "site-packages"
+    ros_py312.mkdir(parents=True)
+
+    result = run_cmd(
+        sdk,
+        "SROBOTIS_CROSS_BUILD_SH_NO_MAIN=1 BUILD_TARGET=k1-py "
+        "bash -lc 'source ./build/cross_build.sh; init_cross_paths; cross_pythonpath'",
+    )
+
+    assert result.returncode == 0, result.stdout
+    paths = result.stdout.strip().split(":")
+    assert paths.index("/usr/lib/python3/dist-packages") < paths.index(str(ros_py312))
+
+
+def test_cross_rewrites_staging_runtime_sysroot_paths(tmp_path: Path) -> None:
+    sdk = make_sdk(tmp_path)
+    target = "k3-runtime-paths"
+    cross_root = sdk / "output" / "cross" / target
+    staging = cross_root / "staging"
+    sysroot = cross_root / "sysroot"
+    ros_underlay = sysroot / "opt" / "ros" / "humble"
+    parent_index = staging / "share" / "ament_index" / "resource_index" / "parent_prefix_path" / "demo_node"
+
+    write_file(
+        staging / "setup.bash",
+        f"""
+        COLCON_CURRENT_PREFIX="{ros_underlay}"
+        _colcon_prefix_chain_bash_source_script "$COLCON_CURRENT_PREFIX/local_setup.bash"
+        """,
+    )
+    write_file(
+        staging / "setup.sh",
+        f"""
+        COLCON_CURRENT_PREFIX="{ros_underlay}"
+        _colcon_prefix_chain_sh_source_script "$COLCON_CURRENT_PREFIX/local_setup.sh"
+        """,
+    )
+    write_file(
+        staging / "setup.zsh",
+        f"""
+        COLCON_CURRENT_PREFIX="{ros_underlay}"
+        _colcon_prefix_chain_zsh_source_script "$COLCON_CURRENT_PREFIX/local_setup.zsh"
+        """,
+    )
+    write_file(parent_index, f"{staging}:{sysroot}/usr:{ros_underlay}\n")
+
+    result = run_cmd(
+        sdk,
+        f"SROBOTIS_CROSS_BUILD_SH_NO_MAIN=1 BUILD_TARGET={target} "
+        "bash -lc 'source ./build/cross_build.sh; init_cross_paths; "
+        "cross_rewrite_staging_runtime_paths'",
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert f"{sysroot}" not in (staging / "setup.bash").read_text(encoding="utf-8")
+    assert 'COLCON_CURRENT_PREFIX="/opt/ros/humble"' in (staging / "setup.bash").read_text(encoding="utf-8")
+    assert 'COLCON_CURRENT_PREFIX="/opt/ros/humble"' in (staging / "setup.sh").read_text(encoding="utf-8")
+    assert 'COLCON_CURRENT_PREFIX="/opt/ros/humble"' in (staging / "setup.zsh").read_text(encoding="utf-8")
+    assert parent_index.read_text(encoding="utf-8") == "{prefix}:/usr:/opt/ros/humble\n"
 
 
 def test_cross_build_bridges_absolute_sysroot_paths_before_ubuntu_build(tmp_path: Path) -> None:

@@ -280,6 +280,7 @@ output/cross/<target>/
 | `SROBOTIS_CROSS_RUST_VERSION` | Rust 工具链版本，默认 `1.91` |
 | `SROBOTIS_CROSS_CARGO_EXECUTABLE` | 覆盖 host Cargo 路径，默认 `/usr/bin/cargo-${SROBOTIS_CROSS_RUST_VERSION}` |
 | `SROBOTIS_CROSS_RUSTC_EXECUTABLE` | 覆盖 host rustc 路径，默认 `/usr/bin/rustc-${SROBOTIS_CROSS_RUST_VERSION}` |
+| `SROBOTIS_CROSS_DISABLE_ROSIDL_GENERATOR_PY` | 设为 `1` 可临时禁用 ROS2 Python 消息生成；默认启用，以支持板端 `ros2 topic echo` 自定义消息 |
 
 辅助命令：
 

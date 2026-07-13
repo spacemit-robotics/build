@@ -19,8 +19,11 @@
   <system_depend when="cross" realm="target">ros-humble-rclcpp</system_depend>
   <system_depend when="cross" realm="target">ros-humble-rosidl-default-generators</system_depend>
   <system_depend when="cross" realm="target">ros-humble-rosidl-default-runtime</system_depend>
+  <system_depend when="cross" realm="target">ros-humble-rosidl-generator-py</system_depend>
+  <system_depend when="cross" realm="target">ros-humble-rosidl-runtime-py</system_depend>
   <system_depend when="cross" realm="target">ros-humble-std-msgs</system_depend>
   <system_depend when="cross" realm="target">ros-humble-std-srvs</system_depend>
+  <system_depend when="cross" realm="target">python3-numpy</system_depend>
 
   <export>
     <!-- Dependency anchor only. -->

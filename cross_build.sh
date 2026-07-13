@@ -41,6 +41,7 @@ CROSS_STAGING_PREFIX=""
 CROSS_ROOTFS_PREFIX=""
 CROSS_TOOLCHAIN_FILE=""
 CROSS_MESON_CROSS_FILE=""
+CROSS_PYTHON_CMAKE_INIT=""
 CROSS_BIANBU_TAG=""
 CROSS_BIANBU_IMAGE=""
 CROSS_UBUNTU_IMAGE=""
@@ -682,6 +683,7 @@ init_cross_paths() {
   CROSS_ROOTFS_PREFIX="${CROSS_OUTPUT_ROOT}/rootfs"
   CROSS_TOOLCHAIN_FILE="${CROSS_OUTPUT_ROOT}/toolchain-riscv64.cmake"
   CROSS_MESON_CROSS_FILE="${CROSS_OUTPUT_ROOT}/meson-riscv64.ini"
+  CROSS_PYTHON_CMAKE_INIT="${CROSS_OUTPUT_ROOT}/cross-python-init.cmake"
 }
 
 cross_container_name() {
@@ -956,25 +958,35 @@ cross_env_prefix_path() {
 
 cross_pythonpath() {
   local paths=()
-  local candidates=(
+  local preferred_ros_paths=()
+  local host_paths=(
+    "/usr/lib/python3/dist-packages"
+    "/usr/local/lib/python3/dist-packages"
+  )
+  local remaining_target_paths=(
+    "${CROSS_SYSROOT}/opt/ros/${ROS_DISTRO}/lib/python3/dist-packages"
     "${CROSS_SYSROOT}/usr/lib/python3/dist-packages"
     "${CROSS_SYSROOT}/usr/local/lib/python3/dist-packages"
-    "${CROSS_SYSROOT}/opt/ros/${ROS_DISTRO}/lib/python3/dist-packages"
   )
-  local path
+  local path py_include py_version
+
+  py_include="$(detect_cross_python_include)"
+  py_version="${py_include##*/python}"
+  if [[ "${py_version}" =~ ^[0-9]+\.[0-9]+$ ]]; then
+    local ros_site_path ros_dist_path
+    ros_site_path="${CROSS_SYSROOT}/opt/ros/${ROS_DISTRO}/lib/python${py_version}/site-packages"
+    ros_dist_path="${CROSS_SYSROOT}/opt/ros/${ROS_DISTRO}/lib/python${py_version}/dist-packages"
+    [[ -f "${ros_site_path}/em.py" ]] && preferred_ros_paths+=("${ros_site_path}")
+    [[ -f "${ros_dist_path}/em.py" ]] && preferred_ros_paths+=("${ros_dist_path}")
+  fi
 
   while IFS= read -r path; do
-    [[ -n "${path}" ]] && candidates+=("${path}")
-  done < <(find "${CROSS_SYSROOT}/usr/lib" -maxdepth 2 -type d \( -name site-packages -o -name dist-packages \) -print 2>/dev/null | sort -V)
-
-  while IFS= read -r path; do
-    [[ -n "${path}" ]] && candidates+=("${path}")
-  done < <(find "${CROSS_SYSROOT}/opt/ros/${ROS_DISTRO}/lib" -maxdepth 2 -type d \( -name site-packages -o -name dist-packages \) -print 2>/dev/null | sort -V)
+    [[ -n "${path}" ]] && remaining_target_paths+=("${path}")
+  done < <(find "${CROSS_SYSROOT}/opt/ros/${ROS_DISTRO}/lib" "${CROSS_SYSROOT}/usr/lib" \( -name site-packages -o -name dist-packages \) -type d -maxdepth 2 -print 2>/dev/null | sort -V)
 
   declare -A seen=()
-  for path in "${candidates[@]}"; do
-    [[ -d "${path}" ]] || continue
-    if [[ -z "${seen[${path}]:-}" ]]; then
+  for path in "${preferred_ros_paths[@]}" "${host_paths[@]}" "${remaining_target_paths[@]}"; do
+    if [[ ( "${path}" == /usr/* || -d "${path}" ) && -z "${seen[${path}]:-}" ]]; then
       seen["${path}"]=1
       paths+=("${path}")
     fi
@@ -985,6 +997,53 @@ cross_pythonpath() {
   fi
 
   (IFS=:; echo "${paths[*]}")
+}
+
+cross_rewrite_staging_runtime_paths() {
+  [[ -n "${CROSS_STAGING_PREFIX:-}" && -n "${CROSS_SYSROOT:-}" ]] || return 0
+  [[ -d "${CROSS_STAGING_PREFIX}" ]] || return 0
+
+  local files=()
+  local file parent_dir
+  for file in \
+    "${CROSS_STAGING_PREFIX}/setup.bash" \
+    "${CROSS_STAGING_PREFIX}/setup.sh" \
+    "${CROSS_STAGING_PREFIX}/setup.zsh"; do
+    [[ -f "${file}" ]] && files+=("${file}")
+  done
+
+  parent_dir="${CROSS_STAGING_PREFIX}/share/ament_index/resource_index/parent_prefix_path"
+  if [[ -d "${parent_dir}" ]]; then
+    while IFS= read -r file; do
+      [[ -n "${file}" ]] && files+=("${file}")
+    done < <(find "${parent_dir}" -type f -print 2>/dev/null | sort)
+  fi
+
+  [[ ${#files[@]} -gt 0 ]] || return 0
+
+  python3 - "${CROSS_SYSROOT}" "${CROSS_STAGING_PREFIX}" "${parent_dir}" "${files[@]}" <<'PY'
+from pathlib import Path
+import sys
+
+sysroot = sys.argv[1].rstrip("/")
+staging = sys.argv[2].rstrip("/")
+parent_dir = sys.argv[3].rstrip("/")
+if not sysroot:
+    sys.exit(0)
+
+for file_name in sys.argv[4:]:
+    path = Path(file_name)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        continue
+    rewritten = text.replace(sysroot + "/", "/")
+    path_text = str(path)
+    if staging and parent_dir and (path_text == parent_dir or path_text.startswith(parent_dir + "/")):
+        rewritten = rewritten.replace(staging, "{prefix}")
+    if rewritten != text:
+        path.write_text(rewritten, encoding="utf-8")
+PY
 }
 
 cross_collect_absolute_sysroot_paths() {
@@ -1080,6 +1139,51 @@ detect_cross_python_library() {
     grep -E '/libpython3\.[0-9]+.*\.so$' | sort -V | tail -n 1 || true
 }
 
+detect_cross_numpy_include() {
+  local candidate
+  while IFS= read -r candidate; do
+    [[ -n "${candidate}" ]] || continue
+    dirname "$(dirname "${candidate}")"
+    return 0
+  done < <(find "${CROSS_SYSROOT}/usr/lib" -path '*/numpy/numpyconfig.h' -print 2>/dev/null | sort -V)
+}
+
+detect_cross_python_soabi() {
+  local candidate soabi py_include py_version
+  while IFS= read -r candidate; do
+    [[ -n "${candidate}" ]] || continue
+    soabi="$(basename "${candidate}")"
+    soabi="${soabi#*.}"
+    soabi="${soabi%.so}"
+    [[ "${soabi}" == cpython-* ]] || continue
+    printf '%s\n' "${soabi}"
+    return 0
+  done < <(find "${CROSS_SYSROOT}/usr/lib" -type f -name '*.cpython-*-riscv64-linux-gnu.so' -print 2>/dev/null | sort -V)
+
+  py_include="$(detect_cross_python_include)"
+  py_version="${py_include##*/python}"
+  if [[ "${py_version}" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+    printf 'cpython-%s%s-riscv64-linux-gnu\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  fi
+}
+
+write_cross_python_cmake_init() {
+  local py_numpy_include numpy_config
+  py_numpy_include="$(detect_cross_numpy_include)"
+  mkdir -p "$(dirname "${CROSS_PYTHON_CMAKE_INIT}")"
+  if [[ -z "${py_numpy_include}" ]]; then
+    : > "${CROSS_PYTHON_CMAKE_INIT}"
+    return 0
+  fi
+  numpy_config="${py_numpy_include}/numpy/numpyconfig.h"
+  cat > "${CROSS_PYTHON_CMAKE_INIT}" <<EOF
+if(CMAKE_CROSSCOMPILING AND EXISTS "${numpy_config}")
+set(_numpy_h "${numpy_config}" CACHE FILEPATH "" FORCE)
+include_directories(BEFORE SYSTEM "${py_numpy_include}")
+endif()
+EOF
+}
+
 write_toolchain_file() {
   mkdir -p "$(dirname "${CROSS_TOOLCHAIN_FILE}")"
   cat > "${CROSS_TOOLCHAIN_FILE}" <<EOF
@@ -1124,12 +1228,18 @@ endian = 'little'
 EOF
 }
 
+cross_ros2_cmake_extra_args() {
+  printf '%s\n' "-DCMAKE_PROJECT_INCLUDE=${CROSS_PYTHON_CMAKE_INIT}"
+}
+
 cross_cmake_extra_args() {
-  local rust_target rust_sysroot py_include py_library
+  local rust_target rust_sysroot py_include py_library py_numpy_include py_soabi
   rust_target="$(detect_cross_rust_target)"
   rust_sysroot="$(detect_cross_rust_sysroot)"
   py_include="$(detect_cross_python_include)"
   py_library="$(detect_cross_python_library)"
+  py_numpy_include="$(detect_cross_numpy_include)"
+  py_soabi="$(detect_cross_python_soabi)"
 
   printf '%s\n' \
     "-DCMAKE_TOOLCHAIN_FILE=${CROSS_TOOLCHAIN_FILE}" \
@@ -1141,7 +1251,6 @@ cross_cmake_extra_args() {
     "-DPython3_FIND_STRATEGY=LOCATION" \
     "-DPYTHON_EXECUTABLE=/usr/bin/python3" \
     "-DBUILD_TESTING=OFF" \
-    "-DCMAKE_DISABLE_FIND_PACKAGE_rosidl_generator_py=TRUE" \
     "-DCMAKE_DISABLE_FIND_PACKAGE_rosidl_generator_rs=TRUE" \
     "-DCMAKE_PREFIX_PATH=${CROSS_STAGING_PREFIX};${CROSS_SYSROOT}/usr;${CROSS_SYSROOT}/usr/lib/riscv64-linux-gnu/cmake;${CROSS_SYSROOT}/opt/ros/${ROS_DISTRO}" \
     "-DCMAKE_FIND_ROOT_PATH=${CROSS_SYSROOT};${CROSS_STAGING_PREFIX}" \
@@ -1172,11 +1281,24 @@ cross_cmake_extra_args() {
     "-DSROBOTIS_RUST_SYSROOT=${rust_sysroot}" \
     "-DSROBOTIS_CARGO_LINK_SYSROOT=${CROSS_SYSROOT}"
 
+  if [[ "${SROBOTIS_CROSS_DISABLE_ROSIDL_GENERATOR_PY:-0}" == "1" ]]; then
+    printf '%s\n' "-DCMAKE_DISABLE_FIND_PACKAGE_rosidl_generator_py=TRUE"
+  fi
   if [[ -n "${py_include}" ]]; then
     printf '%s\n' "-DPython3_INCLUDE_DIR=${py_include}" "-DPYTHON_INCLUDE_DIR=${py_include}"
+    if [[ -n "${py_numpy_include}" ]]; then
+      printf '%s\n' \
+        "-DPython3_NumPy_INCLUDE_DIR=${py_numpy_include}" \
+        "-DPython3_NumPy_INCLUDE_DIRS=${py_numpy_include}" \
+        "-DPYTHON_INCLUDE_DIRS=${py_include};${py_numpy_include}" \
+        "-DPythonExtra_INCLUDE_DIRS=${py_include};${py_numpy_include}"
+    fi
   fi
   if [[ -n "${py_library}" ]]; then
     printf '%s\n' "-DPython3_LIBRARY=${py_library}" "-DPYTHON_LIBRARY=${py_library}" "-DPYTHON_LIBRARIES=${py_library}"
+  fi
+  if [[ -n "${py_soabi}" ]]; then
+    printf '%s\n' "-DPython3_SOABI=${py_soabi}" "-DPYTHON_SOABI=${py_soabi}"
   fi
   if [[ -n "${SROBOTIS_CMAKE_EXTRA_ARGS:-}" ]]; then
     while IFS= read -r line; do
@@ -1195,7 +1317,9 @@ run_build_in_ubuntu() {
   local container="$1"
   shift || true
   local cmake_args pkg_config_libdir pythonpath env_prefix_path
+  local ros2_cmake_args
   cmake_args="$(cross_cmake_extra_args)"
+  ros2_cmake_args="$(cross_ros2_cmake_extra_args)"
   pkg_config_libdir="$(cross_pkg_config_libdir)"
   pythonpath="$(cross_pythonpath)"
   env_prefix_path="$(cross_env_prefix_path)"
@@ -1227,17 +1351,21 @@ run_build_in_ubuntu() {
     -e "AMENT_PREFIX_PATH=${env_prefix_path}" \
     -e "CMAKE_PREFIX_PATH=${env_prefix_path}" \
     -e "SROBOTIS_CMAKE_EXTRA_ARGS=${cmake_args}" \
+    -e "SROBOTIS_ROS2_CMAKE_EXTRA_ARGS=${ros2_cmake_args}" \
     -e "SROBOTIS_CROSS_SYSROOT=${CROSS_SYSROOT}" \
     -e "SROBOTIS_CROSS_OUTPUT_ROOT=${CROSS_OUTPUT_ROOT}" \
     -e "SROBOTIS_CROSS_STAGING=${CROSS_STAGING_PREFIX}" \
     -e "SROBOTIS_CROSS_ROOTFS=${CROSS_ROOTFS_PREFIX}" \
     -e "SROBOTIS_CROSS_HOST_PREFIX=${CROSS_HOST_PREFIX}" \
     -e "SROBOTIS_CROSS_TOOLCHAIN_FILE=${CROSS_TOOLCHAIN_FILE}" \
-    "${container}" \
+  "${container}" \
     ./build/build.sh "$@"
   local rc=$?
   set -e
   cross_chown_output "${container}"
+  if [[ "${rc}" -eq 0 ]]; then
+    cross_rewrite_staging_runtime_paths || rc=$?
+  fi
   return "${rc}"
 }
 
@@ -1283,6 +1411,7 @@ cross_prepare_and_build() {
   fingerprint="$(cross_sysroot_deps_fingerprint)"
   sync_bianbu_sysroot "${bianbu_container}" "${SROBOTIS_CROSS_REFRESH_SYSROOT:-0}" "${fingerprint}"
   write_toolchain_file
+  write_cross_python_cmake_init
   write_meson_cross_file
 
   run_build_in_ubuntu "${ubuntu_container}" "${original_args[@]}"
@@ -1313,6 +1442,7 @@ cross_clean() {
 cross_deploy_rootfs() {
   load_build_config
   init_cross_paths
+  cross_rewrite_staging_runtime_paths
   OUTPUT_ROOT="${CROSS_OUTPUT_ROOT}" \
     STAGING_PREFIX="${CROSS_STAGING_PREFIX}" \
     ROOTFS_PREFIX="${CROSS_ROOTFS_PREFIX}" \
