@@ -75,6 +75,12 @@ build_ros2_workspace() {
     --cmake-args -DCMAKE_PREFIX_PATH="${PREFIX}"
   )
 
+  if [[ -n "${SROBOTIS_ROS2_CMAKE_EXTRA_ARGS:-}" ]]; then
+    while IFS= read -r line; do
+      [[ -n "${line}" ]] && colcon_args+=("${line}")
+    done <<< "${SROBOTIS_ROS2_CMAKE_EXTRA_ARGS}"
+  fi
+
   if [[ -n "${SROBOTIS_CMAKE_EXTRA_ARGS:-}" ]]; then
     while IFS= read -r line; do
       [[ -n "${line}" ]] && colcon_args+=("${line}")
