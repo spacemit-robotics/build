@@ -584,7 +584,7 @@ target_needs_ros2() {
   has_jq || return 1
 
   # enabled_packages: ["middleware/ros2/...", "application/ros2/...", ...]
-  if jq -e '.enabled_packages[]? | startswith("middleware/ros2/") or startswith("application/ros2/")' \
+  if jq -e 'any(.enabled_packages[]?; startswith("middleware/ros2/") or startswith("application/ros2/"))' \
     "${config_file}" >/dev/null 2>&1; then
     return 0
   fi
@@ -744,9 +744,11 @@ collect_system_dependencies() {
   fi
 
   # Include ROS2 deps only when the current build needs ROS2.
-  # - build.sh sets BUILD_NEEDS_ROS2=1 for "ros2" and "all"
+  # - build.sh uses "auto" for target-driven "all" so jq bootstrap is retried
+  # - "ros2" and untargeted "all" set BUILD_NEEDS_ROS2=1 directly
   # - build.sh package path handles per-package detection separately
-  if [[ "${BUILD_NEEDS_ROS2:-0}" == "1" ]]; then
+  if [[ "${BUILD_NEEDS_ROS2:-0}" == "1" ]] ||
+     { [[ "${BUILD_NEEDS_ROS2:-0}" == "auto" ]] && target_needs_ros2; }; then
     local ros2_deps_xml="${REPO_ROOT}/build/package_ros2.xml"
     if [[ -f "${ros2_deps_xml}" ]] && grep -q '<system_depend' "${ros2_deps_xml}" 2>/dev/null; then
       while IFS='|' read -r dep_type dep_name check_cmd; do

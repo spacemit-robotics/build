@@ -349,10 +349,10 @@ main() {
         else
           export BUILD_NEEDS_ROS2=0
         fi
-      elif target_needs_ros2; then
-        export BUILD_NEEDS_ROS2=1
       else
-        export BUILD_NEEDS_ROS2=0
+        # Re-evaluate the target on each dependency pass: a fresh container may
+        # only gain jq after the first base-tool installation.
+        export BUILD_NEEDS_ROS2=auto
       fi
       ;;
     *)
